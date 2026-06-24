@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  @page { size: letter portrait; margin: 0.55in; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; margin:0; font-size:12px; line-height:1.4; }
+  .pill { background:#ED1C24; color:#fff; display:inline-block; padding:6px 18px; border-radius:18px; font-weight:700; font-size:14px; }
+  h1 { font-size:23px; margin:10px 0 2px; }
+  .sub { color:#555; font-size:12px; margin-bottom:12px; }
+  .legend { font-size:11px; color:#444; margin:10px 0 6px; }
+  .b { display:inline-block; padding:2px 9px; border-radius:11px; font-weight:700; font-size:10.5px; color:#fff; white-space:nowrap; }
+  .live { background:#2E9E40; }       /* green */
+  .next { background:#F7941E; }       /* amber */
+  .later{ background:#9a9a9a; }       /* grey  */
+  table { width:100%; border-collapse:collapse; margin-top:4px; }
+  th { background:#f3f3f3; text-align:left; padding:7px 9px; border-bottom:2px solid #ccc; font-size:10.5px; text-transform:uppercase; letter-spacing:.02em; }
+  td { padding:8px 9px; border-bottom:1px solid #e8e8e8; vertical-align:top; }
+  td.issue { font-weight:700; width:30%; }
+  td.ans { width:52%; color:#333; }
+  td.stat { width:18%; }
+  h2 { color:#ED1C24; font-size:13px; border-bottom:2px solid #ED1C24; padding-bottom:3px; margin:16px 0 7px; }
+  .sum { font-size:11.5px; line-height:1.55; }
+  .sum b { color:#1a1a1a; }
+  footer { margin-top:14px; color:#888; font-size:9.5px; border-top:1px solid #ddd; padding-top:6px; }
+</style></head><body>
+  <div class="pill">Graphics Process — Where AI Fits</div>
+  <h1>Automating the booth graphics pipeline</h1>
+  <div class="sub">Southeast Exhibits &amp; Events · every issue raised maps to a concrete step. We build it ourselves, in order, proving each step before the next.</div>
+  <div class="legend">Status: &nbsp;<span class="b live">LIVE NOW</span> built &amp; in hand &nbsp;&nbsp; <span class="b next">BUILDING NEXT</span> &nbsp;&nbsp; <span class="b later">SEPARATE PROJECT</span></div>
+
+  <table>
+    <thead><tr><th>The issue</th><th>What we do about it</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td class="issue">Uniform templates — "nonnegotiable"</td>
+          <td class="ans">One tool builds every wall/panel identically from a single booth file — same result no matter which 3D designer or software made the booth.</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Slow 3D turnaround to make templates</td>
+          <td class="ans">Template-building moves off the 3D team — the graphics team generates the whole set in seconds.</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Inconsistent client spec sheets</td>
+          <td class="ans">The client submission sheet is generated from the same booth file, so it always matches the templates exactly.</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Walls missed; visible-vs-not, finishes, single/double-sided unclear</td>
+          <td class="ans">Every surface, finish, side, and visible-vs-blocked area is captured once at intake and called out on both the template and the client sheet.</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Nothing should ever get missed</td>
+          <td class="ans">A standard intake reads the 3D team's drawings to draft the booth file, flags dimension disagreements between pages, and a person confirms — so no wall slips through. (AI enrichment proposes finishes/door/zones.)</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">AI proofer (spelling, hi/low-res, sizing)</td>
+          <td class="ans">Client files are auto-checked against the booth file — size, resolution, color, fonts, spelling — and flagged before a human ever looks, with a one-page report per file. ("A 1985 Dell can catch this." Agreed.)</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Control the proof, not the vendors</td>
+          <td class="ans">SEE-owned proof sheet + a dated client sign-off + a tracking log. Approval is refused on a file that fails preflight. Vendors get our proof and can run their own as a second set of eyes.</td>
+          <td class="stat"><span class="b live">LIVE NOW</span></td></tr>
+      <tr><td class="issue">Clients stall or abuse the proof step for revisions</td>
+          <td class="ans">Sign-off locks by the due date; reopening it requires approval and triggers an add-on charge.</td>
+          <td class="stat"><span class="b later">VIA PORTAL</span></td></tr>
+      <tr><td class="issue">Live proofing portal + lock + payment</td>
+          <td class="ans">Hosted system: client logs in, uploads, auto-check runs, they sign, it locks, paid unlock. A real software product — built last, once the steps above are proven.</td>
+          <td class="stat"><span class="b later">SEPARATE</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>The bottom line</h2>
+  <div class="sum">
+    <b>In hand today:</b> intake (drafts the booth file from the 3D handoff + flags size disagreements), the uniform template generator, the auto-matched client spec sheet, the AI proofer, and SEE-owned proof sheets with a dated client sign-off + tracking log — proven end-to-end on a real booth (Mama's Creations), our build example.<br>
+    <b>Only piece left:</b> the live client portal that hosts all of the above so clients self-serve uploads + approvals — the separate funded project below.<br>
+    <b>Separate funded project, last:</b> the live client portal with lock + add-on payment — it only pays off once the steps above are proven, and needs its own engineering, hosting, and payment setup.<br><br>
+    <b>The key insight:</b> uniform templates fix the <i>format</i>; making sure nothing is missed and finishes are right is fixed by standardizing what we <i>capture</i> up front. We're doing both — that's why this works where past attempts stalled.
+  </div>
+
+  <footer>Southeast Exhibits &amp; Events · graphics automation roadmap · all phases built with tools we already have.</footer>
+</body></html>

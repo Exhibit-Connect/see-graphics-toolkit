@@ -1,0 +1,77 @@
+{
+  "_about": "SINGLE SOURCE OF TRUTH for one booth. Define the booth here ONCE; the template generator, the client spec sheet, and (later) the AI proofer all read from this same file. Sizes are FULL-SCALE finished (trim) inches. Edit this file per job - you do not edit the generator code.",
+
+  "job": {
+    "name": "Mama's Creations - IDDBA 2026 - 20x20",
+    "client": "Mama's Creations",
+    "show": "IDDBA 2026",
+    "booth_size": "20' x 20'",
+    "version": "C3",
+    "location": "Orlando, FL",
+    "designer": "Matt Spataro",
+    "rep": "Anthony Nisivoccia",
+    "due_date": "TBD"
+  },
+
+  "settings": {
+    "scale": 0.5,
+    "bleed_per_side_in": 1.0,
+    "safe_margin_in": 4.0,
+    "color_mode": "CMYK / Pantone",
+    "resolution_ppi": { "min": 120, "max": 150 },
+    "fonts": "convert to outlines",
+    "printer_marks": "disabled (no crop/registration/color bars)",
+    "submission": ["WeTransfer", "Dropbox", "Adobe Creative Cloud"]
+  },
+
+  "door_standard": {
+    "_note": "Measured from SEE's 1Mx8_DoorCut Left/Right.ai. Door sits on the floor at the latch side; holes centered edge_offset_in from the latch edge.",
+    "panel_w_in": 39.125,
+    "panel_h_in": 95.21,
+    "edge_offset_in": 4.3125,
+    "handle": { "dia_in": 2.0,   "y_from_floor_in": 37.98 },
+    "lock":   { "dia_in": 1.125, "y_from_floor_in": 41.79 }
+  },
+
+  "finish_options": ["fabric", "sintra", "vinyl", "laminate", "acrylic", "direct print", "white / unfinished", "TBD"],
+
+  "panels": [
+    { "name": "A", "w": 78.12, "h": 173.32, "finish": "TBD", "sided": "single", "interior_finish": "TBD", "door": "left", "note": "Closet wall - has the DOOR (handle on the left)" },
+    { "name": "B", "w": 78.12, "h": 173.32, "finish": "TBD", "sided": "single", "interior_finish": "TBD", "note": "Closet wall" },
+    { "name": "C", "w": 78.12, "h": 173.32, "finish": "TBD", "sided": "single", "interior_finish": "TBD", "note": "Closet wall" },
+    { "name": "D", "w": 78.12, "h": 173.32, "finish": "TBD", "sided": "single", "interior_finish": "TBD", "note": "Closet wall" },
+
+    { "name": "E1", "w": 117.18, "h": 114.7, "finish": "TBD", "sided": "single", "note": "Curved glass display sits at the bottom - keep art clear of it",
+      "zones": [ { "x": 7.7775, "y": 0, "w": 101.625, "h": 52.5, "label": "CURVED GLASS DISPLAY / refrigerated storage - KEEP CLEAR (101.625 x 52.5)", "kind": "keepclear" } ] },
+    { "name": "E2", "w": 117.18, "h": 114.7, "finish": "TBD", "sided": "single" },
+    { "name": "E_Soffit", "w": 117.18, "h": 9.76, "finish": "TBD", "sided": "single", "note": "Soffit wrap strip" },
+
+    { "name": "F1", "w": 78.12, "h": 134.26, "finish": "TBD", "sided": "single", "note": "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
+      "zones": [ { "x": 0, "y": 95.20, "w": 78.12, "h": 39.06, "label": "LIVE GRAPHIC AREA (78.12 x 39.06)", "kind": "live" },
+                 { "x": 0, "y": 0,     "w": 78.12, "h": 95.20, "label": "FRIDGE DISPLAY AREA - NO artwork", "kind": "keepclear" } ] },
+    { "name": "F2", "w": 41.31, "h": 134.26, "finish": "TBD", "sided": "single" },
+    { "name": "F3", "w": 78.12, "h": 134.26, "finish": "TBD", "sided": "single", "note": "BACK panel - full height. Shelves may be placed here (sizes TBD)." },
+    { "name": "F4", "w": 41.31, "h": 134.26, "finish": "TBD", "sided": "single", "note": "Shelves may be placed here (sizes TBD)." },
+
+    { "name": "Counter_1", "w": 58.5, "h": 37.5, "finish": "TBD", "sided": "single" },
+    { "name": "Counter_2", "w": 58.5, "h": 37.5, "finish": "TBD", "sided": "single" },
+    { "name": "LCounter_Front", "w": 100.0, "h": 37.5, "finish": "TBD", "sided": "single" },
+    { "name": "LCounter_Side", "w": 59.0, "h": 37.5, "finish": "TBD", "sided": "single" },
+
+    { "name": "Fridge_Fabric_A", "w": 39.06, "h": 134.26, "finish": "white fabric", "sided": "single", "note": "Interior white fabric" },
+    { "name": "Fridge_Fabric_B", "w": 39.06, "h": 134.26, "finish": "white fabric", "sided": "single", "note": "Interior white fabric" },
+    { "name": "Fridge_Fabric_C", "w": 78.12, "h": 134.26, "finish": "white fabric", "sided": "single", "note": "Interior white fabric" }
+  ],
+
+  "excluded": [
+    { "name": "Hanging Sign", "reason": "uses vendor template IDDBA_Hanging_Sign_GT_FMLT-SQU-1003_SNG.pdf - not generated here" }
+  ],
+
+  "pending_inputs": [
+    "finish/substrate per panel (currently TBD)",
+    "which structures are double-sided (currently all 'single')",
+    "closet/meeting-room interiors finished, left white, or unfinished (interior_finish TBD on A-D)",
+    "TV and shelf sizes + positions (add as 'keepclear' zones once known)",
+    "due date"
+  ]
+}

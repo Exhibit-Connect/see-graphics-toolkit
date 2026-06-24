@@ -1,0 +1,23 @@
+# Secrets - never commit
+.openrouter_key
+*.key
+
+# Client / SEE proprietary source - kept local, not distributed
+*.ai
+*Graphic_Dimensions*
+SE_Graphics_Production_Department_Roles.docx
+
+# Redundant bundle (GitHub offers "Download ZIP") + runtime data
+SEE_Wall_Template_Kit.zip
+proof_log.xlsx
+
+# Scratch / generated at runtime
+*_preflight.*
+_intake_*.png
+_intake_ai_dryrun.json
+_proof_thumb.png
+
+# OS / Python
+.DS_Store
+__pycache__/
+*.pyc

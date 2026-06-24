@@ -459,7 +459,7 @@ def find_default_spec():
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (os.getcwd(), os.path.join(here, "..", "examples"),
               os.path.join(os.getcwd(), "examples"), here):
-        hits = sorted(glob.glob(os.path.join(d, "booth_spec*.json")))
+        hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
         if hits:
             return hits[0]
     return "booth_spec.json"

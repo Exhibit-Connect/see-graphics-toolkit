@@ -9,9 +9,8 @@ checks can never disagree.
 ```
 see-graphics-toolkit/
 ├─ tools/       the programs you run (Python + the Illustrator script)
-├─ docs/        read these — the overview, the leadership brief, the how-to
-├─ examples/    a finished example booth + what each tool produces
-├─ samples/     sample artwork to try the proofer / proof on
+├─ docs/        read these — the overview, the AI brief, the instructions
+├─ examples/    a finished example booth, numbered 1->6 in workflow order
 ├─ README.md    you are here
 └─ LICENSE
 ```
@@ -38,11 +37,11 @@ Run from this top folder. The tools auto-find the example booth in `examples/`.
 python3 tools/intake.py path/to/handoff.pdf --job "Client - Show - Size" --ai
 # 2. templates: Illustrator -> File > Scripts > Other Script -> tools/SEE_Wall_Template_Generator.jsx -> pick your booth_spec JSON
 # 3. client spec sheet
-python3 tools/generate_spec_packet.py examples/booth_spec_Mamas_Creations_IDDBA_2026.json
+python3 tools/generate_spec_packet.py examples/1_booth_spec_example.json
 # 4. check a returned artwork file
-python3 tools/proofer.py samples/Counter_1.pdf
+python3 tools/proofer.py path/to/client_artwork.pdf
 # 5. proof + sign-off
-python3 tools/make_proof.py samples/Counter_1.pdf            # then, once OK'd:  --approve "Client Name"
+python3 tools/make_proof.py path/to/client_artwork.pdf       # then, once OK'd:  --approve "Client Name"
 ```
 Full detail is in `docs/Instructions.md`.
 

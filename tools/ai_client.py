@@ -29,7 +29,10 @@ def _load_key():
     if k:
         return k
     here = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.join(here, ".openrouter_key"), os.path.expanduser("~/.openrouter_key")):
+    for path in (os.path.join(os.getcwd(), ".openrouter_key"),
+                 os.path.join(here, ".openrouter_key"),
+                 os.path.join(here, "..", ".openrouter_key"),
+                 os.path.expanduser("~/.openrouter_key")):
         try:
             with open(path) as f:
                 v = f.read().strip()

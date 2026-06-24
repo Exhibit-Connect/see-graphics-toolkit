@@ -123,7 +123,7 @@ def build_proof_html(job, panel, fname, res, thumb_b64, approve):
 
 def main():
     args = sys.argv[1:]
-    spec_path = "booth_spec_Mamas_Creations_IDDBA_2026.json"
+    spec_path = None
     panel_arg = job = approve = None
     files = []
     i = 0
@@ -142,7 +142,7 @@ def main():
     if not files:
         print('usage: python3 make_proof.py <artwork> [--spec ...] [--panel NAME] [--job "Name"] [--approve "Client Name"]')
         return
-    spec = json.load(open(spec_path))
+    spec = json.load(open(spec_path or proofer.find_default_spec()))
     job = job or spec.get("job", {}).get("name", "Untitled job")
     fname = files[0]
     ext = os.path.splitext(fname)[1].lower()

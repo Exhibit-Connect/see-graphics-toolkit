@@ -451,9 +451,23 @@ def build_report_html(fname, panel, how, results, verdict):
     </body></html>"""
 
 
+def find_default_spec():
+    """Locate a booth_spec*.json when --spec isn't given: cwd first, then an
+    examples/ folder next to or above this script. Lets the tools work from
+    the repo root regardless of where the spec lives."""
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.getcwd(), os.path.join(here, "..", "examples"),
+              os.path.join(os.getcwd(), "examples"), here):
+        hits = sorted(glob.glob(os.path.join(d, "booth_spec*.json")))
+        if hits:
+            return hits[0]
+    return "booth_spec.json"
+
+
 def main():
     args = sys.argv[1:]
-    spec_path = "booth_spec_Mamas_Creations_IDDBA_2026.json"
+    spec_path = None
     panel_arg = None
     files = []
     i = 0
@@ -467,7 +481,7 @@ def main():
     if not files:
         print("usage: python3 proofer.py <artwork file> [--spec booth_spec.json] [--panel NAME]")
         return
-    spec = json.load(open(spec_path))
+    spec = json.load(open(spec_path or find_default_spec()))
 
     for fname in files:
         try:

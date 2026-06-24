@@ -14,7 +14,15 @@ Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 import json, sys, os, subprocess, html, tempfile, shutil, time
 
 RED = "#ED1C24"
-DEFAULT_SPEC = "booth_spec_Mamas_Creations_IDDBA_2026.json"
+def find_default_spec():
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.getcwd(), os.path.join(here, "..", "examples"),
+              os.path.join(os.getcwd(), "examples"), here):
+        hits = sorted(glob.glob(os.path.join(d, "booth_spec*.json")))
+        if hits:
+            return hits[0]
+    return "booth_spec.json"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -169,7 +177,7 @@ def render_chrome(html_path, pdf_path):
 
 
 def main():
-    spec_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SPEC
+    spec_path = sys.argv[1] if len(sys.argv) > 1 else find_default_spec()
     spec = json.load(open(spec_path))
     spec["__source"] = os.path.basename(spec_path)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")

@@ -18,8 +18,8 @@ see-graphics-toolkit/
 
 ## New here? Start with these (in `docs/`)
 1. **`How_It_Works_Overview.pdf`** — one-page picture of the whole flow.
-2. **`Leadership_Brief.pdf`** — what each stage fixes, live vs. coming.
-3. **`HOW_TO.md`** — step-by-step for running each tool.
+2. **`Graphics_Design_AI_Brief.pdf`** — what each stage fixes, live vs. coming.
+3. **`Instructions.md`** — plain-language, step-by-step (written assuming Claude is helping).
 
 ## The flow (and the tool for each step)
 | Step | Tool (`tools/`) | What it does |
@@ -44,7 +44,7 @@ python3 tools/proofer.py samples/Counter_1.pdf
 # 5. proof + sign-off
 python3 tools/make_proof.py samples/Counter_1.pdf            # then, once OK'd:  --approve "Client Name"
 ```
-Full detail is in `docs/HOW_TO.md`.
+Full detail is in `docs/Instructions.md`.
 
 ## AI setup (one time)
 The AI steps use OpenRouter. Set your key (and optionally the model):

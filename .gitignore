@@ -11,6 +11,9 @@ SE_Graphics_Production_Department_Roles.docx
 SEE_Wall_Template_Kit.zip
 proof_log.xlsx
 
+# Doc render-sources (the PDFs are the deliverables; HTML kept local for edits)
+docs/*.html
+
 # Scratch / generated at runtime
 *_preflight.*
 _intake_*.png

@@ -2,26 +2,32 @@
 """
 SEE Proof + Sign-off (Phase 4) - proofing we own, not the vendor's.
 
-From a client's artwork + the booth spec, builds a branded PROOF SHEET that
-follows SEE's unified proof standard (per Production's proof-standardization
-memo). One artwork = one page, and every page carries:
-  - a structured SPEC block (item/tracking #, finish size, material, finishing
-    type, qty, sides, seams, revision) pulled from the single-source booth spec;
-  - the automated preflight results WITH a status legend;
-  - a prominent disclaimer BANNER (not fine print);
-  - a 3-option client sign-off (approve as is / approve w/ changes / resubmit);
-  - a consistent footer: Prepped by, QC'd by, date, version, delivery/pickup,
-    Page X of Y.
-Logs every proof to proof_log.xlsx. Approve it to stamp + lock the record; it
-refuses to approve a FAIL, or anything still carrying a placeholder/blank value
-(no "TBD" or "Name here" reaches a client).
+From a client's artwork + the booth spec, builds a branded PROOF that follows
+SEE's unified proof standard (per Production's proof-standardization memo).
+
+Two modes:
+  * SINGLE ITEM (one artwork file): a one-page proof - artwork + a structured
+    SPEC block + the automated preflight results (with a status legend) + a
+    prominent disclaimer banner + a 3-option client sign-off + a consistent
+    footer (prepped/QC/job#/version/fulfillment/page).
+  * WHOLE JOB (several artwork files, or a folder, or --book): ONE multi-page
+    PDF = a COVER/SUMMARY page (logo + job info + a table of every item +
+    review instructions) followed by one page per item, with real Page X of Y.
+
+Every proof is logged to proof_log.xlsx. Approve a single item to stamp + lock
+the record; it refuses to approve a FAIL, or anything still carrying a
+placeholder/blank value (no "TBD" or "Name here" reaches a client).
 
 Usage:
+    # one item
     python3 make_proof.py <artwork> [--spec booth_spec.json] [--panel NAME]
         [--job "Name"] [--prepped-by "Name"] [--qc-by "Name"]
         [--version V] [--fulfillment delivery|pickup] [--approve "Client Name"]
+    # whole job (assembled document)
+    python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
+        [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
 """
-import sys, os, re, json, base64, subprocess, datetime, html
+import sys, os, re, json, glob, base64, subprocess, datetime, html
 import proofer
 try:
     import openpyxl
@@ -37,6 +43,7 @@ CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas |
 DISCLAIMER = ("This proof is for verifying CONTENT, LAYOUT, COLOR BREAK and SIZE only. On-screen color is "
               "not an exact match to the final printed piece. Check spelling, dimensions and finish "
               "carefully — your approval releases this file to print.")
+ART_EXT = (".pdf", ".ai", ".eps") + proofer.RASTER_EXT
 
 # literal placeholder / unfilled markers that must never reach a client
 PLACEHOLDER_RE = re.compile(r"\b(tbd|tba|todo|name here|placeholder|lorem|xxx+)\b|[<>]|\?\?\?", re.I)
@@ -98,8 +105,36 @@ def proof_readiness(specs, prepped_by, qc_by, material):
     return placeholders, missing
 
 
-def thumbnail(path, ext):
-    out = os.path.abspath("_proof_thumb.png")
+def job_totals(items):
+    """(# graphics, # pieces) for the cover - graphics = number of items,
+    pieces = sum of each item's quantity (default 1). Pure function."""
+    pieces = 0
+    for it in items:
+        q = it["panel"].get("quantity", 1)
+        try:
+            pieces += int(q)
+        except (TypeError, ValueError):
+            pieces += 1
+    return len(items), pieces
+
+
+def cover_rows(items):
+    """Per-item rows for the cover summary table: (item, size, material, sides,
+    qty). Pure function."""
+    rows = []
+    for it in items:
+        p = it["panel"]
+        w, h = p.get("w"), p.get("h")
+        size = f'{h:g}" × {w:g}"' if (w and h) else "—"
+        sided = str(p.get("sided", "")).strip().lower()
+        sides = {"single": "1", "double": "2"}.get(sided, str(p.get("sided") or "—"))
+        rows.append((p.get("tracking_id") or p.get("name") or "—", size,
+                     p.get("finish") or "—", sides, str(p.get("quantity", 1))))
+    return rows
+
+
+def thumbnail(path, ext, tag=""):
+    out = os.path.abspath(f"_proof_thumb{tag}.png")
     try:
         if ext in proofer.RASTER_EXT:
             from PIL import Image
@@ -140,6 +175,8 @@ def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, 
 CSS_PROOF = """
   @page { size: letter portrait; margin: 0.5in; }
   body { font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; font-size:12px; margin:0; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
   .pill { background:#ED1C24; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }
   h1 { font-size:19px; margin:9px 0 1px; }
   .meta { color:#555; font-size:11px; margin:1px 0 0; }
@@ -178,19 +215,60 @@ CSS_PROOF = """
   .ftgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
   .ftgrid div b { font-size:11px; }
   .contact { color:#999; font-size:9px; margin-top:7px; }
+  /* cover */
+  .brandrow { display:flex; justify-content:space-between; align-items:center; }
+  .wordmark { font-size:18px; font-weight:800; color:#ED1C24; letter-spacing:.01em; }
+  .coverhead { color:#999; font-size:9px; margin-top:2px; }
+  h1.cv { font-size:23px; margin:16px 0 2px; }
+  .jobgrid { display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }
+  .jobgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
+  .jobgrid div b { font-size:12.5px; }
+  .totals { margin:14px 0 6px; font-size:13px; }
+  .totals b { color:#ED1C24; }
+  table.summary th { background:#ED1C24; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }
+  table.summary td { padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }
+  table.summary tr:nth-child(even) td { background:#fafafa; }
+  table.summary .muted { color:#c0392b; font-weight:700; }
+  .howto { margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }
+  .howto b { color:#ED1C24; }
 """
 
+HEAD = '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF + '</style></head><body>'
+FOOT = '</body></html>'
 
-def build_proof_html(job, res, spec, thumb_b64, approve, meta):
+
+def _item_footer(meta, today, job_no):
+    version = meta.get("version") or "—"
+    prepped = meta.get("prepped_by") or "—"
+    qc = meta.get("qc_by") or "—"
+    fulfillment = (meta.get("fulfillment") or "").title() or "—"
+    page, pages = meta.get("page", 1), meta.get("pages", 1)
+    return f"""<footer>
+        <div class="ftgrid">
+          <div><span>Prepped by</span><b>{html.escape(str(prepped))}</b></div>
+          <div><span>QC'd by</span><b>{html.escape(str(qc))}</b></div>
+          <div><span>Date issued</span><b>{today}</b></div>
+          <div><span>Job #</span><b>{html.escape(str(job_no))}</b></div>
+          <div><span>Proof version</span><b>{html.escape(str(version))}</b></div>
+          <div><span>Fulfillment</span><b>{html.escape(str(fulfillment))}</b></div>
+          <div><span>Page</span><b>{page} of {pages}</b></div>
+        </div>
+        <div class="contact">{CONTACT}</div>
+      </footer>"""
+
+
+def _item_body(job, res, spec, thumb_b64, approve, meta):
+    """One item's page (no <html>/<body> wrapper) - a <section class='page'>."""
     today = datetime.date.today().strftime("%B %d, %Y")
     verdict = res["verdict"]
     panel = res["panel"]
     specs = meta["specs"]
+    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate") or "—"
+    version = meta.get("version") or "—"
 
     spec_rows = "".join(
         f'<tr><td class="sl">{html.escape(l)}</td><td class="sv">{html.escape(str(v))}</td></tr>'
         for l, v in specs)
-
     chk_rows = ""
     for k in proofer.ORDER:
         if k in res["results"]:
@@ -198,7 +276,6 @@ def build_proof_html(job, res, spec, thumb_b64, approve, meta):
             chk_rows += (f'<tr><td class="ck">{k.title()}</td>'
                          f'<td><span class="b" style="background:{proofer.BADGE[st]}">{st}</span></td>'
                          f'<td class="msg">{html.escape(msg)}</td></tr>')
-
     if approve:
         signoff = (f'<div class="stamp">APPROVED &nbsp;·&nbsp; {html.escape(approve)} &nbsp;·&nbsp; {today}</div>'
                    f'<div class="locknote">Locked on approval. Any change after this requires written approval '
@@ -211,25 +288,14 @@ def build_proof_html(job, res, spec, thumb_b64, approve, meta):
             '<div class="opt">&#9744;&nbsp; Revisions required — please resubmit for approval</div>'
             '<div class="lines">Signature ____________________________ &nbsp; Printed name ____________________ &nbsp; Date __________</div>'
             '<div class="chg">Notes / changes: _______________________________________________________________________</div></div>')
-
     img = f'<img src="{thumb_b64}">' if thumb_b64 else '<div class="noimg">(preview unavailable)</div>'
-
     caution = ""
-    if not approve and (meta["placeholders"] or meta["missing"]):
+    if not approve and (meta.get("placeholders") or meta.get("missing")):
         items = "; ".join(meta["placeholders"] + [f"{m} not set" for m in meta["missing"]])
         caution = (f'<div class="caution">&#9888; DRAFT — not client-ready: {html.escape(items)}. '
                    f'Resolve before sending to the client.</div>')
 
-    version = meta.get("version") or "—"
-    prepped = meta.get("prepped_by") or "—"
-    qc = meta.get("qc_by") or "—"
-    fulfillment = (meta.get("fulfillment") or "—").title() if meta.get("fulfillment") else "—"
-    page, pages = meta.get("page", 1), meta.get("pages", 1)
-    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate") or "—"
-
-    head = ('<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF +
-            '</style></head><body>')
-    return head + f"""
+    return f"""<section class="page">
       <div class="pill">Artwork Proof — for client approval</div>
       <h1>{html.escape(job)} &nbsp;—&nbsp; Item {html.escape(panel['name'])}</h1>
       <div class="meta">Proof version {html.escape(str(version))} &nbsp;·&nbsp; {today} &nbsp;·&nbsp; checked against the booth spec &nbsp;·&nbsp;
@@ -251,26 +317,89 @@ def build_proof_html(job, res, spec, thumb_b64, approve, meta):
         </div>
       </div>
       <div class="signbox">{signoff}</div>
-      <footer>
-        <div class="ftgrid">
-          <div><span>Prepped by</span><b>{html.escape(str(prepped))}</b></div>
-          <div><span>QC'd by</span><b>{html.escape(str(qc))}</b></div>
-          <div><span>Date issued</span><b>{today}</b></div>
-          <div><span>Job #</span><b>{html.escape(str(job_no))}</b></div>
-          <div><span>Proof version</span><b>{html.escape(str(version))}</b></div>
-          <div><span>Fulfillment</span><b>{html.escape(str(fulfillment))}</b></div>
-          <div><span>Page</span><b>{page} of {pages}</b></div>
-        </div>
-        <div class="contact">{CONTACT}</div>
+      {_item_footer(meta, today, job_no)}
+    </section>"""
+
+
+def build_proof_html(job, res, spec, thumb_b64, approve, meta):
+    """Single-item proof (full HTML document)."""
+    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta) + FOOT
+
+
+def _cover_body(job, spec, items, meta):
+    """The job COVER / summary page (a <section class='page'>)."""
+    today = datetime.date.today().strftime("%B %d, %Y")
+    j = spec.get("job", {})
+    job_no = j.get("job_number") or j.get("estimate") or "—"
+    version = meta.get("version") or j.get("version") or "—"
+    due = j.get("due_date")
+    due_txt = "" if (is_blank(due) or looks_placeholder(due)) else f" Please return the signed proof by <b>{html.escape(str(due))}</b>."
+    n_graphics, n_pieces = job_totals(items)
+
+    fields = [("Client", j.get("client")), ("Show", j.get("show")), ("Booth", j.get("booth_size")),
+              ("Job #", job_no), ("Proof version", version), ("Date issued", today)]
+    jobgrid = "".join(f'<div><span>{html.escape(l)}</span><b>{html.escape(str(v or "—"))}</b></div>'
+                      for l, v in fields)
+
+    srows = ""
+    for i, (name, size, material, sides, qty) in enumerate(cover_rows(items), 1):
+        mcls = ' class="muted"' if looks_placeholder(material) else ""
+        srows += (f'<tr><td>{i}</td><td><b>{html.escape(name)}</b></td><td>{html.escape(size)}</td>'
+                  f'<td{mcls}>{html.escape(material)}</td><td>{html.escape(sides)}</td><td>{html.escape(qty)}</td></tr>')
+
+    return f"""<section class="page cover">
+      <div class="brandrow">
+        <div><div class="wordmark">Southeast Exhibits &amp; Events</div>
+          <div class="coverhead">Orlando | Las Vegas | Atlanta | NJ/NY | Dallas &nbsp;·&nbsp; SouthEastExhibit.com</div></div>
+        <div class="pill">Client Proof</div>
+      </div>
+      <h1 class="cv">{html.escape(job)}</h1>
+      <div class="jobgrid">{jobgrid}</div>
+      <div class="totals">This proof covers <b>{n_graphics}</b> graphic(s) — <b>{n_pieces}</b> piece(s) total.</div>
+      <table class="summary"><thead><tr><th>#</th><th>Item</th><th>Finish size (H × W)</th><th>Material</th><th>Sides</th><th>Qty</th></tr></thead>
+        <tbody>{srows}</tbody></table>
+      <div class="howto"><b>How to review:</b> Each graphic is on its own page that follows. For every item,
+        check the artwork, spelling, dimensions and finish, then mark one box — <b>Approved as is</b>,
+        <b>Approved with changes</b>, or <b>Revisions required</b> — and sign and date it.{due_txt}
+        Your approval releases that file to print.</div>
+      <footer><div class="contact">{CONTACT}</div>
+        <div class="ftgrid" style="margin-top:5px"><div><span>Page</span><b>1 of {meta.get('pages', 1)}</b></div></div>
       </footer>
-    </body></html>"""
+    </section>"""
+
+
+def build_job_html(job, spec, items, approve, base_meta):
+    """Whole-job document: cover page + one page per item, with Page X of Y."""
+    pages = len(items) + 1
+    base_meta = dict(base_meta, pages=pages)
+    out = HEAD + _cover_body(job, spec, items, base_meta)
+    for idx, it in enumerate(items):
+        meta = dict(base_meta, specs=it["specs"], placeholders=it["placeholders"],
+                    missing=it["missing"], page=idx + 2, pages=pages)
+        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta)
+    return out + FOOT
+
+
+# ---------- CLI ----------
+def collect_files(raw):
+    """Expand any directory arguments into the artwork files they contain."""
+    files = []
+    for a in raw:
+        if os.path.isdir(a):
+            for f in sorted(glob.glob(os.path.join(a, "*"))):
+                if os.path.splitext(f)[1].lower() in ART_EXT:
+                    files.append(f)
+        else:
+            files.append(a)
+    return files
 
 
 def main():
     args = sys.argv[1:]
     spec_path = panel_arg = job = approve = None
     prepped_by = qc_by = version = fulfillment = None
-    files = []
+    book = False
+    raw = []
     i = 0
     while i < len(args):
         a = args[i]
@@ -290,55 +419,50 @@ def main():
             version = args[i + 1]; i += 2
         elif a == "--fulfillment":
             fulfillment = args[i + 1]; i += 2
+        elif a == "--book":
+            book = True; i += 1
         else:
-            files.append(a); i += 1
+            raw.append(a); i += 1
+    files = collect_files(raw)
     if not files:
-        print('usage: python3 make_proof.py <artwork> [--spec ...] [--panel NAME] [--job "Name"]\n'
+        print('usage: python3 make_proof.py <artwork ...> [--spec ...] [--panel NAME] [--job "Name"]\n'
               '       [--prepped-by "Name"] [--qc-by "Name"] [--version V]\n'
-              '       [--fulfillment delivery|pickup] [--approve "Client Name"]')
+              '       [--fulfillment delivery|pickup] [--approve "Client Name"] [--book]')
         return
     spec = json.load(open(spec_path or proofer.find_default_spec()))
     job = job or spec.get("job", {}).get("name", "Untitled job")
     version = version or spec.get("job", {}).get("version")
-    fname = files[0]
-    ext = os.path.splitext(fname)[1].lower()
+    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
+    base_meta = {"prepped_by": prepped_by, "qc_by": qc_by, "version": version,
+                 "fulfillment": fulfillment}
 
+    if len(files) > 1 or book:
+        build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg)
+    else:
+        build_single_proof(files[0], spec, job, job_no, approve, base_meta, panel_arg)
+
+
+def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
+    ext = os.path.splitext(fname)[1].lower()
     try:
         res = proofer.run_checks(fname, spec, panel_arg)
     except Exception as e:
         print("could not read file:", e); return
     if not res:
         print("could not match to a panel — re-run with --panel NAME"); return
-
     panel = res["panel"]
-    specs = panel_specs(panel, spec, version)
-    placeholders, missing = proof_readiness(specs, prepped_by, qc_by, panel.get("finish"))
-
-    # --- approval gates (refuse to lock anything not client-ready) ---
+    specs = panel_specs(panel, spec, base_meta.get("version"))
+    placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
+                                            base_meta.get("qc_by"), panel.get("finish"))
     if approve:
-        if res["verdict"] == "FAIL":
-            print(f"⛔ Refusing to stamp APPROVED: {os.path.basename(fname)} FAILS preflight "
-                  f"({', '.join(k for k, v in res['results'].items() if v[0] == 'FAIL')}). Fix the FAIL(s) first.")
-            return
-        if placeholders:
-            print("⛔ Refusing to stamp APPROVED: placeholder/blank values would reach the client:\n   - "
-                  + "\n   - ".join(placeholders) + "\n   Fill them in the booth spec first.")
-            return
-        if missing:
-            print("⛔ Refusing to stamp APPROVED: required field(s) not set: " + ", ".join(missing)
-                  + ".\n   Provide --prepped-by / --qc-by and a confirmed Material before approving.")
-            return
+        msg = _approval_block(res, placeholders, missing, os.path.basename(fname))
+        if msg:
+            print(msg); return
 
     thumb = thumbnail(fname, ext)
-    meta = {"specs": specs, "placeholders": placeholders, "missing": missing,
-            "prepped_by": prepped_by, "qc_by": qc_by, "version": version,
-            "fulfillment": fulfillment, "page": 1, "pages": 1}
+    meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
     page = build_proof_html(job, res, spec, b64img(thumb), approve, meta)
-    if thumb:
-        try:
-            os.remove(thumb)
-        except OSError:
-            pass
+    _cleanup(thumb)
 
     base = re.sub(r"[^A-Za-z0-9]+", "_", os.path.splitext(os.path.basename(fname))[0]).strip("_")
     suffix = "_PROOF_APPROVED" if approve else "_PROOF"
@@ -346,18 +470,89 @@ def main():
     pp = os.path.abspath(base + suffix + ".pdf")
     open(hp, "w").write(page)
     status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
-    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
     logged = log_proof(job, job_no, panel["name"], fname, res["verdict"], status,
-                       version, prepped_by, qc_by, approve)
-
+                       base_meta.get("version"), base_meta.get("prepped_by"),
+                       base_meta.get("qc_by"), approve)
     ok = proofer.render_pdf(hp, pp)
     print(f"\nItem {panel['name']}  ·  verdict {res['verdict']}  ·  " +
           (f"APPROVED by {approve}" if approve else "awaiting client sign-off"))
     if not approve and (placeholders or missing):
-        notes = placeholders + [f"{m} not set" for m in missing]
-        print("⚠  NOT client-ready yet — resolve before sending:\n   - " + "\n   - ".join(notes))
+        print("⚠  NOT client-ready yet — resolve before sending:\n   - "
+              + "\n   - ".join(placeholders + [f"{m} not set" for m in missing]))
     print("Proof sheet:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
     print("Logged to  :", logged)
+
+
+def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
+    if approve:
+        print("note: --approve is for a single item; the job document is a draft for per-item sign-off. Ignoring --approve.")
+        approve = None
+    panel_index = {p["name"]: i for i, p in enumerate(spec.get("panels", []))}
+    items, unmatched = [], []
+    for n, fname in enumerate(files):
+        ext = os.path.splitext(fname)[1].lower()
+        try:
+            res = proofer.run_checks(fname, spec, None)
+        except Exception as e:
+            unmatched.append(f"{os.path.basename(fname)} ({e})"); continue
+        if not res:
+            unmatched.append(os.path.basename(fname)); continue
+        panel = res["panel"]
+        specs = panel_specs(panel, spec, base_meta.get("version"))
+        placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
+                                                base_meta.get("qc_by"), panel.get("finish"))
+        thumb = thumbnail(fname, ext, tag=str(n))
+        items.append({"panel": panel, "res": res, "specs": specs, "fname": fname,
+                      "placeholders": placeholders, "missing": missing,
+                      "thumb_b64": b64img(thumb), "_thumb": thumb})
+    if not items:
+        print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel"); return
+    items.sort(key=lambda it: panel_index.get(it["panel"]["name"], 999))
+
+    html_doc = build_job_html(job, spec, items, approve, base_meta)
+    for it in items:
+        _cleanup(it.get("_thumb"))
+
+    base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_") or "Job"
+    hp = os.path.abspath(base + "_JOB_PROOF.html")
+    pp = os.path.abspath(base + "_JOB_PROOF.pdf")
+    open(hp, "w").write(html_doc)
+    for it in items:
+        log_proof(job, job_no, it["panel"]["name"], it["fname"], it["res"]["verdict"],
+                  "PROOFED (job doc)", base_meta.get("version"),
+                  base_meta.get("prepped_by"), base_meta.get("qc_by"), None)
+    ok = proofer.render_pdf(hp, pp)
+    n_graphics, n_pieces = job_totals(items)
+    print(f"\nJOB PROOF · {job}")
+    print(f"  {n_graphics} item(s), {n_pieces} piece(s) · {len(items) + 1} pages (cover + {len(items)})")
+    for it in items:
+        flag = "  ⚠ not client-ready" if (it["placeholders"] or it["missing"]) else ""
+        print(f"    - {it['panel']['name']:14} {it['res']['verdict']}{flag}")
+    if unmatched:
+        print("  unmatched (skipped):", ", ".join(unmatched))
+    print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
+
+
+def _approval_block(res, placeholders, missing, fname):
+    """Return a refusal message if this item can't be locked-approved, else None."""
+    if res["verdict"] == "FAIL":
+        return (f"⛔ Refusing to stamp APPROVED: {fname} FAILS preflight "
+                f"({', '.join(k for k, v in res['results'].items() if v[0] == 'FAIL')}). Fix the FAIL(s) first.")
+    if placeholders:
+        return ("⛔ Refusing to stamp APPROVED: placeholder/blank values would reach the client:\n   - "
+                + "\n   - ".join(placeholders) + "\n   Fill them in the booth spec first.")
+    if missing:
+        return ("⛔ Refusing to stamp APPROVED: required field(s) not set: " + ", ".join(missing)
+                + ".\n   Provide --prepped-by / --qc-by and a confirmed Material before approving.")
+    return None
+
+
+def _cleanup(path):
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

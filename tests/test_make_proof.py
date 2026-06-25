@@ -74,3 +74,19 @@ def test_proof_readiness_clean_when_complete():
     placeholders, missing = mp.proof_readiness(specs, "A. Tech", "M. Palumbo", panel["finish"])
     assert placeholders == []
     assert missing == []
+
+
+def test_job_totals_counts_graphics_and_pieces():
+    items = [{"panel": {"quantity": 2}}, {"panel": {"quantity": 1}}, {"panel": {}}]
+    assert mp.job_totals(items) == (3, 4)          # 2 + 1 + default 1
+
+
+def test_cover_rows_shapes_and_defaults():
+    items = [
+        {"panel": {"name": "F1", "w": 78.12, "h": 134.26, "finish": "Fabric", "sided": "single"}},
+        {"panel": {"name": "A", "w": 50, "h": 100, "finish": "TBD", "sided": "double",
+                   "quantity": 3, "tracking_id": "G-A"}},
+    ]
+    rows = mp.cover_rows(items)
+    assert rows[0] == ("F1", '134.26" × 78.12"', "Fabric", "1", "1")    # qty + sides default
+    assert rows[1] == ("G-A", '100" × 50"', "TBD", "2", "3")            # tracking_id + double

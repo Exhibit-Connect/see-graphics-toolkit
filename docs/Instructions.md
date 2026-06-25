@@ -46,6 +46,7 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 - **Helpful to add:** *"prepped by [name], QC'd by [name], for delivery"* — Claude puts those on the sheet (a real name, never a placeholder).
 - When the client approves it, **say:** *"Mark it approved by [client name]."*
 - **You get back:** a dated, **locked** approval record (and it's logged). Claude won't finalize an approval if the file still **fails a check** *or* if anything is still marked **"to be confirmed"** — so no half‑finished proof reaches a client.
+- **For a whole job at once:** give Claude **all** the graphics files together and say *"Make the full proof document for this job."* You get **one PDF** — a **cover page** that lists every graphic (size, material, quantity) and then one page per graphic for the client to review and sign.
 
 ---
 

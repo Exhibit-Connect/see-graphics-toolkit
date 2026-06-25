@@ -28,7 +28,7 @@ see-graphics-toolkit/
 | Preview templates | `preview_templates.py` | Quick PNG/SVG picture of every panel's layout from the booth file — no Illustrator needed. |
 | Tell the client | `generate_spec_packet.py` | The client submission spec sheet (PDF), from the same booth file. |
 | Check artwork | `proofer.py` | Auto-checks a returned file: size, color, resolution, fonts, spelling. |
-| Proof & sign-off | `make_proof.py` | Branded proof sheet + dated, locked client approval; logs each one. |
+| Proof & sign-off | `make_proof.py` | Branded proof — one item, or a whole-job multi-page document (cover/summary page + one page per graphic); dated, locked client approval; logs each one. |
 | (shared) | `ai_client.py` | OpenRouter client used by the AI steps. |
 
 ## Quick start

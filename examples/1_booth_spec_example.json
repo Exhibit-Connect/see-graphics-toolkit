@@ -44,17 +44,17 @@
 
     { "name": "E1", "w": 117.18, "h": 114.7, "finish": "TBD", "sided": "single", "note": "Curved glass display sits at the bottom - keep art clear of it",
       "zones": [ { "x": 7.7775, "y": 0, "w": 101.625, "h": 52.5, "label": "CURVED GLASS DISPLAY / refrigerated storage - KEEP CLEAR (101.625 x 52.5)", "kind": "keepclear" } ] },
-    { "name": "E2", "w": 117.18, "h": 114.7, "finish": "TBD", "sided": "single" },
+    { "name": "E2", "w": 117.18, "h": 114.7, "finish": "Fabric", "finishing_type": "SEG", "sided": "single", "quantity": 1 },
     { "name": "E_Soffit", "w": 117.18, "h": 9.76, "finish": "TBD", "sided": "single", "note": "Soffit wrap strip" },
 
     { "name": "F1", "w": 78.12, "h": 134.26, "finish": "Fabric", "finishing_type": "SEG", "sided": "single", "quantity": 1, "seams": "None", "note": "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
       "zones": [ { "x": 0, "y": 95.20, "w": 78.12, "h": 39.06, "label": "LIVE GRAPHIC AREA (78.12 x 39.06)", "kind": "live" },
                  { "x": 0, "y": 0,     "w": 78.12, "h": 95.20, "label": "FRIDGE DISPLAY AREA - NO artwork", "kind": "keepclear" } ] },
-    { "name": "F2", "w": 41.31, "h": 134.26, "finish": "TBD", "sided": "single" },
+    { "name": "F2", "w": 41.31, "h": 134.26, "finish": "Fabric", "finishing_type": "SEG", "sided": "single", "quantity": 1 },
     { "name": "F3", "w": 78.12, "h": 134.26, "finish": "TBD", "sided": "single", "note": "BACK panel - full height. Shelves may be placed here (sizes TBD)." },
     { "name": "F4", "w": 41.31, "h": 134.26, "finish": "TBD", "sided": "single", "note": "Shelves may be placed here (sizes TBD)." },
 
-    { "name": "Counter_1", "w": 58.5, "h": 37.5, "finish": "TBD", "sided": "single" },
+    { "name": "Counter_1", "w": 58.5, "h": 37.5, "finish": "Vinyl", "finishing_type": "Direct print", "sided": "single", "quantity": 1 },
     { "name": "Counter_2", "w": 58.5, "h": 37.5, "finish": "TBD", "sided": "single" },
     { "name": "LCounter_Front", "w": 100.0, "h": 37.5, "finish": "TBD", "sided": "single" },
     { "name": "LCounter_Side", "w": 59.0, "h": 37.5, "finish": "TBD", "sided": "single" },

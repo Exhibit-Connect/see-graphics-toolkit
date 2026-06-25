@@ -29,6 +29,8 @@ This is the one hands‑on step, done by a designer in Adobe Illustrator:
 You'll get one ready‑to‑design template per wall (the colored guide lines are explained at the bottom).
 *Not a designer? Ask Claude to walk you through it.*
 
+**Quick look without Illustrator:** ask Claude — *"show me what the wall templates will look like"* — and it generates a preview image of all the panels straight from the booth file.
+
 ### 3 · Tell the client what to send
 - **Say:** *"Make the client spec sheet from the booth file."*
 - **You get back:** a clean PDF that lists every graphic's size and the rules — the sheet you email the client, with the due date.

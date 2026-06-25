@@ -25,6 +25,7 @@ see-graphics-toolkit/
 |------|------|--------------|
 | Capture the key | `intake.py` | Reads a 3D handoff (PDF/`.ai`) → drafts the booth file + a confirm checklist. |
 | Build templates | `SEE_Wall_Template_Generator.jsx` | Illustrator script → every wall template, from the booth file. |
+| Preview templates | `preview_templates.py` | Quick PNG/SVG picture of every panel's layout from the booth file — no Illustrator needed. |
 | Tell the client | `generate_spec_packet.py` | The client submission spec sheet (PDF), from the same booth file. |
 | Check artwork | `proofer.py` | Auto-checks a returned file: size, color, resolution, fonts, spelling. |
 | Proof & sign-off | `make_proof.py` | Branded proof sheet + dated, locked client approval; logs each one. |
@@ -36,6 +37,8 @@ Run from this top folder. The tools auto-find the example booth in `examples/`.
 # 1. draft a booth file from a 3D handoff
 python3 tools/intake.py path/to/handoff.pdf --job "Client - Show - Size" --ai
 # 2. templates: Illustrator -> File > Scripts > Other Script -> tools/SEE_Wall_Template_Generator.jsx -> pick your booth_spec JSON
+# 2b. (optional) a quick visual preview of the templates, no Illustrator:
+python3 tools/preview_templates.py examples/1_booth_spec_example.json
 # 3. client spec sheet
 python3 tools/generate_spec_packet.py examples/1_booth_spec_example.json
 # 4. check a returned artwork file

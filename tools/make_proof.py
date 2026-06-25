@@ -27,7 +27,7 @@ Usage:
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
 """
-import sys, os, re, json, glob, base64, subprocess, datetime, html
+import sys, os, re, json, glob, base64, subprocess, datetime, html, functools
 import proofer
 try:
     import openpyxl
@@ -155,6 +155,25 @@ def b64img(p):
     return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode() if p else ""
 
 
+@functools.lru_cache(maxsize=1)
+def _logo_data_uri():
+    """Find the SEE logo PNG and return it as a data URI, else '' (the proof
+    falls back to a text wordmark). Looks in assets/ next to the tools/ dir, the
+    repo root, and cwd - so it works regardless of where the tool is run."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    seen = []
+    for d in (os.path.join(here, "..", "assets"), os.path.join(os.getcwd(), "assets"),
+              here, os.path.join(here, ".."), os.getcwd()):
+        seen += sorted(glob.glob(os.path.join(d, "see_logo.png")))
+        seen += sorted(glob.glob(os.path.join(d, "*[Ll]ogo*.png")))
+    for p in seen:
+        try:
+            return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode()
+        except OSError:
+            continue
+    return ""
+
+
 def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver):
     if not openpyxl:
         return "(openpyxl missing - log skipped)"
@@ -218,6 +237,9 @@ CSS_PROOF = """
   /* cover */
   .brandrow { display:flex; justify-content:space-between; align-items:center; }
   .wordmark { font-size:18px; font-weight:800; color:#ED1C24; letter-spacing:.01em; }
+  .logo { height:56px; width:auto; display:block; margin-bottom:4px; }
+  .logosm { height:30px; width:auto; }
+  .phead { display:flex; justify-content:space-between; align-items:center; }
   .coverhead { color:#999; font-size:9px; margin-top:2px; }
   h1.cv { font-size:23px; margin:16px 0 2px; }
   .jobgrid { display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }
@@ -257,8 +279,10 @@ def _item_footer(meta, today, job_no):
       </footer>"""
 
 
-def _item_body(job, res, spec, thumb_b64, approve, meta):
-    """One item's page (no <html>/<body> wrapper) - a <section class='page'>."""
+def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
+    """One item's page (no <html>/<body> wrapper) - a <section class='page'>.
+    `logo` (a data URI) shows a small mark in the header for a standalone proof;
+    in the job document the cover carries the logo, so item pages pass ''."""
     today = datetime.date.today().strftime("%B %d, %Y")
     verdict = res["verdict"]
     panel = res["panel"]
@@ -295,8 +319,9 @@ def _item_body(job, res, spec, thumb_b64, approve, meta):
         caution = (f'<div class="caution">&#9888; DRAFT — not client-ready: {html.escape(items)}. '
                    f'Resolve before sending to the client.</div>')
 
+    logo_html = f'<img class="logosm" src="{logo}">' if logo else ''
     return f"""<section class="page">
-      <div class="pill">Artwork Proof — for client approval</div>
+      <div class="phead"><div class="pill">Artwork Proof — for client approval</div>{logo_html}</div>
       <h1>{html.escape(job)} &nbsp;—&nbsp; Item {html.escape(panel['name'])}</h1>
       <div class="meta">Proof version {html.escape(str(version))} &nbsp;·&nbsp; {today} &nbsp;·&nbsp; checked against the booth spec &nbsp;·&nbsp;
         <span class="verdict" style="background:{VCOL[verdict]}">{VLABEL[verdict]}</span>
@@ -323,12 +348,15 @@ def _item_body(job, res, spec, thumb_b64, approve, meta):
 
 def build_proof_html(job, res, spec, thumb_b64, approve, meta):
     """Single-item proof (full HTML document)."""
-    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta) + FOOT
+    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta, logo=_logo_data_uri()) + FOOT
 
 
 def _cover_body(job, spec, items, meta):
     """The job COVER / summary page (a <section class='page'>)."""
     today = datetime.date.today().strftime("%B %d, %Y")
+    logo = _logo_data_uri()
+    brand = (f'<img class="logo" src="{logo}">' if logo
+             else '<div class="wordmark">Southeast Exhibits &amp; Events</div>')
     j = spec.get("job", {})
     job_no = j.get("job_number") or j.get("estimate") or "—"
     version = meta.get("version") or j.get("version") or "—"
@@ -349,7 +377,7 @@ def _cover_body(job, spec, items, meta):
 
     return f"""<section class="page cover">
       <div class="brandrow">
-        <div><div class="wordmark">Southeast Exhibits &amp; Events</div>
+        <div>{brand}
           <div class="coverhead">Orlando | Las Vegas | Atlanta | NJ/NY | Dallas &nbsp;·&nbsp; SouthEastExhibit.com</div></div>
         <div class="pill">Client Proof</div>
       </div>

@@ -5,6 +5,8 @@
 # Client / SEE proprietary source - kept local, not distributed
 *.ai
 *Graphic_Dimensions*
+# logo: the tool uses assets/see_logo.png (committed); keep the source PDF local
+SE_Exhibits_Logo_Horizontal.pdf
 SE_Graphics_Production_Department_Roles.docx
 
 # Redundant bundle (GitHub offers "Download ZIP") + runtime data

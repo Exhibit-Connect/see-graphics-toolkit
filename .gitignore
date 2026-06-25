@@ -24,3 +24,5 @@ _proof_thumb.png
 .DS_Store
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv*/

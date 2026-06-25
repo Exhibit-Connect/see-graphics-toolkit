@@ -13,8 +13,8 @@ Handles both handoff styles:
 Two passes:
   1. DETERMINISTIC (always, offline): pulls panel names + sizes from the
      text via patterns. This is the reliable floor.
-  2. AI ENRICHMENT (optional, --ai): shows Gemini the rendered pages to
-     propose finishes / sided / door / keep-clear zones AND to flag any
+  2. AI ENRICHMENT (optional, --ai): shows an AI model (via OpenRouter) the
+     rendered pages to propose finishes / sided / door / keep-clear zones AND to flag any
      printable surface it can SEE that the text pass missed. Needs
      OPENROUTER_API_KEY; without it, the exact request is saved as a
      dry-run so you can run it later.
@@ -114,14 +114,21 @@ def render_pages(path, n_pages, max_pages=5):
     return out
 
 
+# Standard SEE material vocabulary (mirrors finish_options in the example booth spec).
+FINISH_OPTIONS = ["fabric", "sintra", "vinyl", "laminate", "acrylic", "direct print"]
+
 AI_PROMPT = (
     "You are reviewing a trade-show booth GRAPHICS PLACEMENT package (images attached).\n"
-    "Return STRICT JSON: {\"panels\":[{\"name\":\"\",\"w\":0,\"h\":0,\"finish\":\"\",\"sided\":\"single|double\","
+    "Return STRICT JSON: {\"panels\":[{\"name\":\"\",\"w\":0,\"h\":0,\"finish\":\"\",\"finish_confidence\":\"low|medium|high\","
+    "\"needs_confirm\":true,\"sided\":\"single|double\","
     "\"door\":\"left|right|null\",\"zones\":[{\"label\":\"\",\"w\":0,\"h\":0,\"kind\":\"keepclear|live\"}]}],"
     "\"missing_or_unsure\":[\"\"]}.\n"
-    "List EVERY printable panel/graphic with width x height in inches. For each, state the finish/substrate if shown "
-    "(fabric, sintra, vinyl, laminate, etc.), single vs double sided, whether it has a door (which side), and any "
-    "keep-clear areas (TVs, shelves, fridges, glass displays) with sizes.\n"
+    "List EVERY printable panel/graphic with width x height in inches. For EVERY panel you MUST give a best-guess "
+    "finish/substrate chosen from this standard material list: " + ", ".join(FINISH_OPTIONS) + ". Never leave finish "
+    "blank or \"TBD\" — pick the single most likely material from that list even when the package does not state it. "
+    "These finishes are AI BEST GUESSES, not facts: set \"finish_confidence\" (low/medium/high) and keep "
+    "\"needs_confirm\" true so a human confirms each one. Also state single vs double sided, whether it has a door "
+    "(which side), and any keep-clear areas (TVs, shelves, fridges, glass displays) with sizes.\n"
     "CRITICAL: compare against this text-extracted list and add anything you can SEE that is missing, and note it in "
     "missing_or_unsure:\n__DET__\n"
 )
@@ -150,6 +157,24 @@ def ai_enrich(path, n_pages, det_panels):
                 pass
 
 
+def ai_finish_guesses(ai, panels):
+    """Map text-pass panel name -> AI best-guess finish, for panels the AI proposed
+    a usable (non-blank, non-TBD) finish for. Safe on dry-run/error/text-only AI
+    payloads (returns {}). These are guesses a human must still confirm."""
+    if not isinstance(ai, dict) or ai.get("_status") != "live":
+        return {}
+    by_norm = {norm_name(p["name"]): p["name"] for p in panels}
+    out = {}
+    for ap in ai.get("panels", []) or []:
+        fin = str(ap.get("finish", "")).strip()
+        if not fin or fin.upper() == "TBD":
+            continue
+        name = by_norm.get(norm_name(str(ap.get("name", ""))))
+        if name and name not in out:
+            out[name] = fin
+    return out
+
+
 def build_review(job, src, panels, conflicts, fullscale, extras, ai):
     lines = [f"# Intake review — {job}", "",
              f"Source handoff: `{os.path.basename(src)}`  ·  **DRAFT — a person must confirm this before it feeds production.**", "",
@@ -159,7 +184,12 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai):
         lines.append(f"| {p['name']} | {p['w']}\" | {p['h']}\" |")
     lines += ["", f"Per-wall \"Full Scale Trim\" confirmations found: {len(fullscale)}", ""]
     lines += ["## Confirm / fill before use", ""]
-    todo = ["**Finish / substrate** per panel (text pass can't see it — currently TBD)",
+    finish_line = "**Finish / substrate** per panel (text pass can't see it — currently TBD)"
+    ai_finishes = ai_finish_guesses(ai, panels) if ai else {}
+    if ai_finishes:
+        guesses = ", ".join(f"{n}: {g}" for n, g in ai_finishes.items())
+        finish_line = f"**Finish / substrate** per panel ({guesses}) — AI best-guess, CONFIRM"
+    todo = [finish_line,
             "**Single vs double-sided** per structure (defaulted to single)",
             "**Door** — which wall + side (lift hardware from the 1Mx8 templates)",
             "**Keep-clear zones** — TVs, shelves, fridges, displays: size + position",

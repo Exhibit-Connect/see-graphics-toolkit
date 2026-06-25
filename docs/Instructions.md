@@ -42,9 +42,10 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 
 ### 5 · Send a proof and get sign‑off
 - **Say:** *"Make a proof sheet for this artwork."*
-- **You get back:** a branded proof (the artwork + the checks) to send the client.
+- **You get back:** one standardized proof — the artwork, a full **spec list** (size, material, finishing, quantity, sides, seams, revision), the automated checks with a color key, a clear **review notice**, a **three‑way sign‑off** (approve as‑is / approve with changes / resubmit), and a footer showing who prepped and QC'd it.
+- **Helpful to add:** *"prepped by [name], QC'd by [name], for delivery"* — Claude puts those on the sheet (a real name, never a placeholder).
 - When the client approves it, **say:** *"Mark it approved by [client name]."*
-- **You get back:** a dated, **locked** approval record (and it's logged). Claude won't mark it approved if it still fails the checks.
+- **You get back:** a dated, **locked** approval record (and it's logged). Claude won't finalize an approval if the file still **fails a check** *or* if anything is still marked **"to be confirmed"** — so no half‑finished proof reaches a client.
 
 ---
 

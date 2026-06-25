@@ -6,6 +6,7 @@
     "client": "Mama's Creations",
     "show": "IDDBA 2026",
     "booth_size": "20' x 20'",
+    "job_number": "EST3042-A",
     "version": "C3",
     "location": "Orlando, FL",
     "designer": "Matt Spataro",
@@ -46,7 +47,7 @@
     { "name": "E2", "w": 117.18, "h": 114.7, "finish": "TBD", "sided": "single" },
     { "name": "E_Soffit", "w": 117.18, "h": 9.76, "finish": "TBD", "sided": "single", "note": "Soffit wrap strip" },
 
-    { "name": "F1", "w": 78.12, "h": 134.26, "finish": "TBD", "sided": "single", "note": "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
+    { "name": "F1", "w": 78.12, "h": 134.26, "finish": "Fabric", "finishing_type": "SEG", "sided": "single", "quantity": 1, "seams": "None", "note": "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
       "zones": [ { "x": 0, "y": 95.20, "w": 78.12, "h": 39.06, "label": "LIVE GRAPHIC AREA (78.12 x 39.06)", "kind": "live" },
                  { "x": 0, "y": 0,     "w": 78.12, "h": 95.20, "label": "FRIDGE DISPLAY AREA - NO artwork", "kind": "keepclear" } ] },
     { "name": "F2", "w": 41.31, "h": 134.26, "finish": "TBD", "sided": "single" },

@@ -58,6 +58,14 @@ Check it: `python3 tools/ai_client.py --check`. Without a key, the AI step write
 - Python 3 with `pypdf`, `Pillow`, `openpyxl`
 - Ghostscript and Google Chrome (used to render the PDFs)
 
+## Running tests
+A small pytest suite covers the offline parsing/check helpers in `intake.py` and `proofer.py`.
+```sh
+pip install -r requirements-dev.txt
+pytest
+```
+Run it after editing those scripts to catch regressions before shipping.
+
 ## Not included (by design)
 Client artwork, the proprietary door-template `.ai` files, and internal SEE documents are kept out
 of this repo. The door geometry is already baked into the code, and the `examples/` files demonstrate

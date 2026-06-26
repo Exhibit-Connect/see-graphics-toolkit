@@ -81,3 +81,56 @@ def test_ai_surface_lines_empty_on_non_live_payloads():
     assert intake.ai_surface_lines({"_status": "dry-run"}) == []
     assert intake.ai_surface_lines({"_status": "error"}) == []
     assert intake.ai_surface_lines(None) == []
+
+
+def test_ai_seed_panels_seeds_only_shown_dims_and_flags_the_rest():
+    ai = {"_status": "live", "panels": [
+        {"name": "E", "w": 253.875, "h": 153.8125, "dims_shown": True, "finish": "fabric", "sided": "single"},
+        {"name": "Back Wall", "w": None, "h": None, "dims_shown": False, "finish": "fabric"},
+    ]}
+    seeded, undim = intake.ai_seed_panels(ai)
+    assert [p["name"] for p in seeded] == ["E"]
+    assert seeded[0]["w"] == 253.875 and seeded[0]["h"] == 153.8125
+    assert seeded[0]["needs_confirm"] is True and "AI vision" in seeded[0]["_source"]
+    assert undim == ["Back Wall"]      # seen but no printed size -> flagged, never invented
+
+
+def test_ai_seed_panels_treats_dims_shown_false_as_undimensioned_even_with_numbers():
+    # if the model fills numbers but admits dims_shown is false, don't seed them as fact
+    ai = {"_status": "live", "panels": [
+        {"name": "Guess", "w": 100, "h": 50, "dims_shown": False, "finish": "vinyl"},
+    ]}
+    seeded, undim = intake.ai_seed_panels(ai)
+    assert seeded == [] and undim == ["Guess"]
+
+
+def test_ai_seed_panels_empty_on_non_live():
+    assert intake.ai_seed_panels({"_status": "dry-run"}) == ([], [])
+    assert intake.ai_seed_panels(None) == ([], [])
+
+
+def test_parse_graphic_key_reads_labels_and_dims():
+    # the exact shape OCR returns for a real handoff's "Graphic Key"
+    text = ('Graphic Key\n'
+            'C 107.325"w x 153.8125"h\n'
+            'E 253.875"w x 153.8125"h\n'
+            'K 78.75"w x 35.433"h\n')
+    panels = intake.parse_graphic_key(text)
+    assert panels == [
+        {"name": "C", "w": 107.325, "h": 153.8125},
+        {"name": "E", "w": 253.875, "h": 153.8125},
+        {"name": "K", "w": 78.75, "h": 35.433},
+    ]
+
+
+def test_parse_graphic_key_expands_ranges():
+    # "H1-H2 ..." means H1 AND H2 share that size -> two panels
+    panels = intake.parse_graphic_key('H1-H2 39.0625"w x 153.8125"h\n')
+    assert [p["name"] for p in panels] == ["H1", "H2"]
+    assert all(p["w"] == 39.0625 and p["h"] == 153.8125 for p in panels)
+
+
+def test_parse_graphic_key_ignores_non_key_lines():
+    # headers / prose / out-of-range numbers are not panels
+    text = "Graphic Key\nSome notes here\nBooth is 30x30\nC 700\"w x 50\"h\n"
+    assert intake.parse_graphic_key(text) == []   # 700 is out of the 1..600 range

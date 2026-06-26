@@ -53,6 +53,14 @@ def find_panel(spec, fname, panel_arg):
     return None, None
 
 
+def unverified_panels(spec):
+    """Names of panels whose dimensions are NOT yet human-verified - e.g. seeded by
+    AI/OCR from a visual handoff and still flagged `needs_confirm`. Print-critical,
+    client-facing tools (spec sheet, proof approval) must refuse or loudly warn until
+    a human signs these off, so an unconfirmed size can never reach production. Pure."""
+    return [p.get("name", "?") for p in spec.get("panels", []) if p.get("needs_confirm")]
+
+
 def expected_sizes(spec, p):
     """All acceptable (w,h) in inches: full/half scale, trim and bleed-box."""
     b = spec.get("settings", {}).get("bleed_per_side_in", 1.0)

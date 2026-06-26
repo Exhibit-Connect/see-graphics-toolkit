@@ -482,6 +482,8 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     specs = panel_specs(panel, spec, base_meta.get("version"))
     placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
                                             base_meta.get("qc_by"), panel.get("finish"))
+    if panel.get("needs_confirm"):
+        missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
     if approve:
         msg = _approval_block(res, placeholders, missing, os.path.basename(fname))
         if msg:
@@ -529,6 +531,8 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         specs = panel_specs(panel, spec, base_meta.get("version"))
         placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
                                                 base_meta.get("qc_by"), panel.get("finish"))
+        if panel.get("needs_confirm"):
+            missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
         thumb = thumbnail(fname, ext, tag=str(n))
         items.append({"panel": panel, "res": res, "specs": specs, "fname": fname,
                       "placeholders": placeholders, "missing": missing,
@@ -570,8 +574,8 @@ def _approval_block(res, placeholders, missing, fname):
         return ("⛔ Refusing to stamp APPROVED: placeholder/blank values would reach the client:\n   - "
                 + "\n   - ".join(placeholders) + "\n   Fill them in the booth spec first.")
     if missing:
-        return ("⛔ Refusing to stamp APPROVED: required field(s) not set: " + ", ".join(missing)
-                + ".\n   Provide --prepped-by / --qc-by and a confirmed Material before approving.")
+        return ("⛔ Refusing to stamp APPROVED: not client-ready — " + ", ".join(missing)
+                + ".\n   Confirm these in the booth file (and provide --prepped-by / --qc-by) before approving.")
     return None
 
 

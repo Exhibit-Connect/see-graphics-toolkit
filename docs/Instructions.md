@@ -17,6 +17,7 @@ The **booth file** is one small file that lists every wall and its size. Everyth
 - **Give Claude:** the 3D team's placement drawings (the PDF that shows the walls and sizes).
 - **Say:** *"Make the booth file for [Client – Show – Size] from this handoff."*
 - **You get back:** a draft booth file **+ a short checklist** of things to confirm — finishes (fabric, vinyl…), which wall has the door, any TV/shelf spots, the due date.
+- **If the handoff is a *picture* (a slide deck with the sizes drawn on, not typed):** Claude's AI reads the sizes right off the images and fills the draft for you — each one marked to **confirm**, and anything without a printed size is flagged to **measure** (never guessed).
 - **Your job:** answer the checklist (ask Marc or the 3D team if unsure) and tell Claude the answers. Done — that file now drives every step below.
 
 ### 2 · Make the wall templates (in Illustrator)

@@ -20,6 +20,16 @@ def test_norm_strips_to_alnum_lowercase():
     assert proofer.norm("Wall A / Left!") == "wallaleft"
 
 
+def test_unverified_panels_lists_needs_confirm():
+    spec = {"panels": [
+        {"name": "A", "w": 10, "h": 20},                         # verified (no flag)
+        {"name": "B", "w": 30, "h": 40, "needs_confirm": True},   # AI/OCR-seeded
+        {"name": "C", "w": 5, "h": 5, "needs_confirm": False},
+    ]}
+    assert proofer.unverified_panels(spec) == ["B"]
+    assert proofer.unverified_panels({"panels": []}) == []
+
+
 def test_expected_sizes_full_half_and_bleed():
     expected, b, sc = proofer.expected_sizes(SPEC, SPEC["panels"][0])
     assert b == 1.0 and sc == 0.5

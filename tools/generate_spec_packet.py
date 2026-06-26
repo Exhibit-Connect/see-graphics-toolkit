@@ -12,6 +12,7 @@ Usage:
 Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 """
 import json, sys, os, subprocess, html, tempfile, shutil, time
+import proofer
 
 RED = "#ED1C24"
 def find_default_spec():
@@ -57,19 +58,24 @@ def build_html(spec):
     panels = spec.get("panels", [])
     pending = spec.get("pending_inputs", [])
     excluded = spec.get("excluded", [])
-    draft = any("TBD" in str(p.get("finish", "")) for p in panels) or bool(pending)
+    unverified = proofer.unverified_panels(spec)
+    draft = any("TBD" in str(p.get("finish", "")) for p in panels) or bool(pending) or bool(unverified)
+    footer_note = ("Sizes marked ⚠ are UNVERIFIED until a person confirms them against the source."
+                   if unverified else "For position only; sizes are final unless flagged.")
 
     rows = ""
     for p in panels:
         finish = p.get("finish", "—")
         fin_cls = ' class="muted"' if "TBD" in str(finish) else ""
+        unv = bool(p.get("needs_confirm"))
+        unv_badge = ' <span class="unv">⚠ unverified — confirm</span>' if unv else ""
         sided = p.get("sided", "")
         sided_disp = "Double-sided" if sided == "double" else ("Single-sided" if sided == "single" else "—")
         interior = f'<br><span class="muted">Interior: {esc(p["interior_finish"])}</span>' if p.get("interior_finish") else ""
         note = esc(p.get("note", "")) or '<span class="muted">—</span>'
         rows += f"""<tr>
           <td class="pname">{esc(p['name'])}</td>
-          <td class="size">{p['w']}″ × {p['h']}″</td>
+          <td class="size{' unvsize' if unv else ''}">{p['w']}″ × {p['h']}″{unv_badge}</td>
           <td{fin_cls}>{esc(finish)}{interior}</td>
           <td>{sided_disp}</td>
           <td class="vis">{visible_cell(p)}</td>
@@ -81,11 +87,16 @@ def build_html(spec):
         items = "".join(f"<li><b>{esc(e['name'])}</b> — {esc(e.get('reason',''))}</li>" for e in excluded)
         excl = f'<h2>Not in this packet</h2><ul class="plain">{items}</ul>'
 
-    draft_banner = ""
-    if draft:
+    banner = ""
+    if unverified:
+        names = ", ".join(esc(n) for n in unverified)
+        banner += (f'<div class="unvbanner">⚠ UNVERIFIED DIMENSIONS — {len(unverified)} panel(s) were read by AI/OCR and '
+                   f'are <u>not yet confirmed by a person</u>. Do not treat these sizes as final or send this sheet to the '
+                   f'client until they are checked against the source: <b>{names}</b>.</div>')
+    if pending:
         pend = "".join(f"<li>{esc(x)}</li>" for x in pending)
-        draft_banner = f"""<div class="draft">DRAFT — items below are still being confirmed; sizes are final, the flagged details are not:
-          <ul>{pend}</ul></div>"""
+        sizes_claim = "sizes are final, the flagged details are not" if not unverified else "the flagged items below are not final"
+        banner += f'<div class="draft">DRAFT — items below are still being confirmed; {sizes_claim}:<ul>{pend}</ul></div>'
 
     bleed = st.get("bleed_per_side_in", 1.0)
     specs = f"""
@@ -127,12 +138,15 @@ def build_html(spec):
       ul.plain {{ font-size:12px; }}
       .draft {{ background:#fff4f4; border:1px solid {RED}; color:#7a0d12; padding:8px 12px; border-radius:8px; font-size:11.5px; margin:10px 0; }}
       .draft ul {{ margin:4px 0 0; }}
+      .unvbanner {{ background:{RED}; color:#fff; padding:10px 14px; border-radius:8px; font-size:12px; font-weight:600; margin:10px 0; line-height:1.4; }}
+      .unv {{ color:{RED}; font-weight:700; font-size:9.5px; white-space:nowrap; }}
+      .unvsize {{ color:{RED}; }}
       footer {{ margin-top:18px; color:#888; font-size:10px; border-top:1px solid #ddd; padding-top:6px; }}
     </style></head><body>
       <div class="pill">Graphic Submission Spec Packet</div>
       <h1>{esc(job.get('name','') or job.get('client',''))}</h1>
       <div class="meta">{meta}</div>
-      {draft_banner}
+      {banner}
       <h2>Graphics to submit</h2>
       <table>
         <thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Finish / substrate</th><th>Sided</th><th>Visible area / keep-clear</th><th>Notes</th></tr></thead>
@@ -141,7 +155,7 @@ def build_html(spec):
       <h2>How to build your files</h2>
       <ul class="specs">{specs}</ul>
       {excl}
-      <footer>Generated from {esc(os.path.basename(spec.get('__source','booth spec')))} · Southeast Exhibits &amp; Events. For position only; sizes are final unless flagged.</footer>
+      <footer>Generated from {esc(os.path.basename(spec.get('__source','booth spec')))} · Southeast Exhibits &amp; Events. {footer_note}</footer>
     </body></html>"""
 
 
@@ -183,8 +197,11 @@ def main():
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
     html_path = os.path.abspath(f"{base}_Spec_Packet.html")
     pdf_path = os.path.abspath(f"{base}_Spec_Packet.pdf")
+    unv = proofer.unverified_panels(spec)
     open(html_path, "w").write(build_html(spec))
     print("HTML:", html_path)
+    if unv:
+        print(f"⚠  {len(unv)} UNVERIFIED panel(s) (AI/OCR-sourced): {', '.join(unv)} — confirm before sending to the client.")
 
     if os.path.exists(CHROME) and render_chrome(html_path, pdf_path):
         print("PDF: ", pdf_path, f"({os.path.getsize(pdf_path)} bytes)")

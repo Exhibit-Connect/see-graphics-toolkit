@@ -119,16 +119,21 @@ FINISH_OPTIONS = ["fabric", "sintra", "vinyl", "laminate", "acrylic", "direct pr
 
 AI_PROMPT = (
     "You are reviewing a trade-show booth GRAPHICS PLACEMENT package (images attached).\n"
-    "Return STRICT JSON: {\"panels\":[{\"name\":\"\",\"w\":0,\"h\":0,\"finish\":\"\",\"finish_confidence\":\"low|medium|high\","
-    "\"needs_confirm\":true,\"sided\":\"single|double\","
-    "\"door\":\"left|right|null\",\"zones\":[{\"label\":\"\",\"w\":0,\"h\":0,\"kind\":\"keepclear|live\"}]}],"
+    "Return STRICT JSON: {\"panels\":[{\"name\":\"\",\"w\":null,\"h\":null,\"dims_shown\":false,\"finish\":\"\","
+    "\"finish_confidence\":\"low|medium|high\",\"needs_confirm\":true,\"sided\":\"single|double\","
+    "\"door\":\"left|right|null\",\"zones\":[{\"label\":\"\",\"w\":null,\"h\":null,\"kind\":\"keepclear|live\"}]}],"
     "\"missing_or_unsure\":[\"\"]}.\n"
-    "List EVERY printable panel/graphic with width x height in inches. For EVERY panel you MUST give a best-guess "
-    "finish/substrate chosen from this standard material list: " + ", ".join(FINISH_OPTIONS) + ". Never leave finish "
-    "blank or \"TBD\" — pick the single most likely material from that list even when the package does not state it. "
-    "These finishes are AI BEST GUESSES, not facts: set \"finish_confidence\" (low/medium/high) and keep "
-    "\"needs_confirm\" true so a human confirms each one. Also state single vs double sided, whether it has a door "
-    "(which side), and any keep-clear areas (TVs, shelves, fridges, glass displays) with sizes.\n"
+    "List EVERY printable panel/graphic you can see.\n"
+    "DIMENSIONS — CRITICAL: report \"w\" and \"h\" (inches) ONLY when a size is explicitly printed or labeled for "
+    "that panel in the package. If a panel's size is NOT explicitly shown, set \"w\":null, \"h\":null and "
+    "\"dims_shown\":false, and DO NOT estimate, infer, calculate, or guess it from the booth size or typical panels — "
+    "a wrong printed size is far worse than a blank one. Add every panel whose size is not shown to "
+    "\"missing_or_unsure\". Set \"dims_shown\":true only when the size is actually printed in the package.\n"
+    "FINISH (guesses ARE allowed here): for EVERY panel give a best-guess finish/substrate from this list: "
+    + ", ".join(FINISH_OPTIONS) + ". Never leave finish blank — pick the most likely one even if not stated, but set "
+    "\"finish_confidence\" (low/medium/high) and keep \"needs_confirm\" true so a human confirms each. Also state "
+    "single vs double sided, whether it has a door (which side), and any keep-clear areas (TVs, shelves, fridges, "
+    "glass displays).\n"
     "CRITICAL: compare against this text-extracted list and add anything you can SEE that is missing, and note it in "
     "missing_or_unsure:\n__DET__\n"
 )
@@ -175,6 +180,25 @@ def ai_finish_guesses(ai, panels):
     return out
 
 
+def ai_surface_lines(ai):
+    """Markdown bullets for the AI-proposed surfaces (for the review file). Shows a
+    panel's size only when the handoff actually printed it (dims_shown + real w/h);
+    otherwise flags the size as MISSING - the model is told not to guess sizes, so a
+    blank here means 'go get this dimension', not a tool failure. Pure; returns []
+    on dry-run/error/text-only payloads."""
+    if not isinstance(ai, dict) or ai.get("_status") != "live":
+        return []
+    lines = []
+    for p in ai.get("panels", []) or []:
+        name = str(p.get("name", "?")).strip() or "?"
+        w, h = p.get("w"), p.get("h")
+        shown = p.get("dims_shown") is True and w not in (None, 0, "", "0") and h not in (None, 0, "", "0")
+        dims = f'{w}" × {h}"' if shown else "**size NOT in handoff — confirm with the 3D source**"
+        fin = str(p.get("finish", "")).strip()
+        lines.append(f"- {name}: {dims}" + (f" · finish guess: {fin}" if fin else ""))
+    return lines
+
+
 def build_review(job, src, panels, conflicts, fullscale, extras, ai):
     lines = [f"# Intake review — {job}", "",
              f"Source handoff: `{os.path.basename(src)}`  ·  **DRAFT — a person must confirm this before it feeds production.**", "",
@@ -210,8 +234,12 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai):
     elif ai.get("_status") == "dry-run":
         lines.append(f"- **dry-run** (no API key). Model `{ai.get('_model')}`. Request written to `_intake_ai_dryrun.json` — set `OPENROUTER_API_KEY` and re-run with `--ai` to execute.")
     elif ai.get("_status") == "live":
-        lines.append(f"- **ran live** with `{ai.get('_model')}`. Proposed {len(ai.get('panels', []))} panels; "
-                     f"missing/unsure: {', '.join(ai.get('missing_or_unsure', []) or ['none'])}. See `_intake.ai` in the JSON.")
+        lines.append(f"- **ran live** with `{ai.get('_model')}`. Proposed {len(ai.get('panels', []))} surface(s); "
+                     f"missing/unsure: {', '.join(ai.get('missing_or_unsure', []) or ['none'])}.")
+        surfaces = ai_surface_lines(ai)
+        if surfaces:
+            lines += ["", "**AI-proposed surfaces** (advisory — the model is told NOT to guess sizes, so confirm any "
+                      "flagged size against the 3D source before use):"] + surfaces
     else:
         lines.append(f"- error: {ai.get('_error')}")
     return "\n".join(lines) + "\n"

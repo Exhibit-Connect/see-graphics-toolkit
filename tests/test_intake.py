@@ -63,3 +63,21 @@ def test_reconcile_flags_per_wall_disagreement():
 def test_reconcile_silent_when_sizes_agree():
     panels, _ = intake.parse_panels("Counter: 30 x 40\n")
     assert intake.reconcile(panels, 'Counter\n30" x 40"\n') == []
+
+
+def test_ai_surface_lines_shows_size_only_when_handoff_printed_it():
+    # the model is told not to guess sizes; a panel without dims_shown is flagged,
+    # never rendered with an invented number
+    ai = {"_status": "live", "panels": [
+        {"name": "Back Wall", "w": 120, "h": 96, "dims_shown": True, "finish": "fabric"},
+        {"name": "Tower", "w": None, "h": None, "dims_shown": False, "finish": "fabric"},
+    ]}
+    lines = intake.ai_surface_lines(ai)
+    assert any("Back Wall" in ln and "120" in ln for ln in lines)
+    assert any("Tower" in ln and "NOT in handoff" in ln for ln in lines)
+
+
+def test_ai_surface_lines_empty_on_non_live_payloads():
+    assert intake.ai_surface_lines({"_status": "dry-run"}) == []
+    assert intake.ai_surface_lines({"_status": "error"}) == []
+    assert intake.ai_surface_lines(None) == []

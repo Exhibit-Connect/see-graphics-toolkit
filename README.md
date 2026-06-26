@@ -52,7 +52,7 @@ Full detail is in `docs/Instructions.md`.
 The AI steps use OpenRouter. Set your key (and optionally the model):
 ```sh
 export OPENROUTER_API_KEY="sk-or-..."
-export OPENROUTER_MODEL="google/gemini-3.5-flash"   # default
+export OPENROUTER_MODEL="anthropic/claude-opus-4.8"   # default
 ```
 Check it: `python3 tools/ai_client.py --check`. Without a key, the AI step writes a dry-run request instead of failing.
 

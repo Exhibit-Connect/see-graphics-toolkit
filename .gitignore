@@ -30,3 +30,5 @@ __pycache__/
 .venv*/
 *.zip
 CLAUDE.md
+# internal call-prep / strategy notes (client names + internal plans — never public)
+Call_Prep_Notes.md

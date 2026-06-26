@@ -4,10 +4,10 @@ Shared AI client for SEE tools — OpenRouter (company key).
 
 Model + key are configuration, not hard-coded into the tools:
     OPENROUTER_API_KEY   your company key   (required for live calls)
-    OPENROUTER_MODEL     default: google/gemini-3.5-flash
+    OPENROUTER_MODEL     default: anthropic/claude-opus-4.8
 
 Standard library only (urllib) — no pip install needed. Multimodal:
-pass image paths and they're sent inline (Gemini Flash reads images),
+pass image paths and they're sent inline (the model reads the images),
 which is how intake.py shows the model the rendered placement pages.
 
 CLI:
@@ -18,7 +18,7 @@ CLI:
 import os, sys, json, base64, urllib.request, urllib.error
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-3.5-flash")
+MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-opus-4.8")
 
 
 def _load_key():

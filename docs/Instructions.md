@@ -34,7 +34,7 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 
 ### 3 · Tell the client what to send
 - **Say:** *"Make the client spec sheet from the booth file."*
-- **You get back:** a clean PDF that lists every graphic's size and the rules — the sheet you email the client, with the due date.
+- **You get back:** a clean PDF — the sheet you email the client — listing every graphic's **size, material, finishing type, and quantity**, the build rules, the **job number**, and the due date.
 
 ### 4 · Client sends artwork back → check it
 - **Give Claude:** the client's file(s).

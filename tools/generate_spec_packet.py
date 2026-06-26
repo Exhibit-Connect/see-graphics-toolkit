@@ -72,11 +72,16 @@ def build_html(spec):
         sided = p.get("sided", "")
         sided_disp = "Double-sided" if sided == "double" else ("Single-sided" if sided == "single" else "—")
         interior = f'<br><span class="muted">Interior: {esc(p["interior_finish"])}</span>' if p.get("interior_finish") else ""
+        ftype = p.get("finishing_type") or "—"
+        ftype_cls = ' class="muted"' if (ftype == "—" or "TBD" in str(ftype)) else ""
+        qty = p.get("quantity", 1)
         note = esc(p.get("note", "")) or '<span class="muted">—</span>'
         rows += f"""<tr>
           <td class="pname">{esc(p['name'])}</td>
           <td class="size{' unvsize' if unv else ''}">{p['w']}″ × {p['h']}″{unv_badge}</td>
           <td{fin_cls}>{esc(finish)}{interior}</td>
+          <td{ftype_cls}>{esc(ftype)}</td>
+          <td class="qty">{esc(qty)}</td>
           <td>{sided_disp}</td>
           <td class="vis">{visible_cell(p)}</td>
           <td class="note">{note}</td>
@@ -112,6 +117,7 @@ def build_html(spec):
 
     meta = " &nbsp;|&nbsp; ".join(
         f"<b>{esc(k.title())}:</b> {esc(v)}" for k, v in [
+            ("Job #", job.get("job_number", "") or job.get("estimate", "")),
             ("Show", job.get("show", "")), ("Booth", job.get("booth_size", "")),
             ("Version", job.get("version", "")), ("Location", job.get("location", "")),
             ("Due date", job.get("due_date", "")),
@@ -130,6 +136,7 @@ def build_html(spec):
       td {{ padding:6px 8px; border-bottom:1px solid #e6e6e6; vertical-align:top; }}
       .pname {{ font-weight:700; white-space:nowrap; }}
       .size {{ font-variant-numeric: tabular-nums; white-space:nowrap; font-weight:600; }}
+      .qty {{ text-align:center; font-weight:600; }}
       .vis {{ font-size:10.8px; }}
       .note {{ color:#555; font-size:10.8px; }}
       .muted {{ color:#9a9a9a; }}
@@ -149,7 +156,7 @@ def build_html(spec):
       {banner}
       <h2>Graphics to submit</h2>
       <table>
-        <thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Finish / substrate</th><th>Sided</th><th>Visible area / keep-clear</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Material</th><th>Finishing type</th><th>Qty</th><th>Sided</th><th>Visible area / keep-clear</th><th>Notes</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
       <h2>How to build your files</h2>

@@ -134,3 +134,16 @@ def test_parse_graphic_key_ignores_non_key_lines():
     # headers / prose / out-of-range numbers are not panels
     text = "Graphic Key\nSome notes here\nBooth is 30x30\nC 700\"w x 50\"h\n"
     assert intake.parse_graphic_key(text) == []   # 700 is out of the 1..600 range
+
+
+def test_ai_field_guesses_maps_finish_and_finishing_type():
+    ai = {"_status": "live", "panels": [
+        {"name": "E", "finish": "fabric", "finishing_type": "SEG"},
+        {"name": "K", "finish": "vinyl", "finishing_type": "TBD"},      # TBD value skipped
+        {"name": "Z", "finish": "", "finishing_type": "Direct Print"},  # blank value skipped
+    ]}
+    panels = [{"name": "E"}, {"name": "K"}, {"name": "Z"}]
+    assert intake.ai_field_guesses(ai, panels, "finish") == {"E": "fabric", "K": "vinyl"}
+    assert intake.ai_field_guesses(ai, panels, "finishing_type") == {"E": "SEG", "Z": "Direct Print"}
+    assert intake.ai_finish_guesses(ai, panels) == {"E": "fabric", "K": "vinyl"}   # wrapper
+    assert intake.ai_field_guesses({"_status": "dry-run"}, panels, "finish") == {}

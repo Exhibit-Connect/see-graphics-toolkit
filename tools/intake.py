@@ -177,11 +177,13 @@ def ocr_pages(path, n_pages, max_pages=8):
 
 # Standard SEE material vocabulary (mirrors finish_options in the example booth spec).
 FINISH_OPTIONS = ["fabric", "sintra", "vinyl", "laminate", "acrylic", "direct print"]
+# Construction / finishing types. Travis: "anything we use" — an OPEN list; these are the common ones.
+FINISHING_TYPES = ["SEG", "Pole Pocket", "Direct Print", "Laminate", "Door", "Corner Post"]
 
 AI_PROMPT = (
     "You are reviewing a trade-show booth GRAPHICS PLACEMENT package (images attached).\n"
     "Return STRICT JSON: {\"panels\":[{\"name\":\"\",\"w\":null,\"h\":null,\"dims_shown\":false,\"finish\":\"\","
-    "\"finish_confidence\":\"low|medium|high\",\"needs_confirm\":true,\"sided\":\"single|double\","
+    "\"finish_confidence\":\"low|medium|high\",\"finishing_type\":\"\",\"needs_confirm\":true,\"sided\":\"single|double\","
     "\"door\":\"left|right|null\",\"zones\":[{\"label\":\"\",\"w\":null,\"h\":null,\"kind\":\"keepclear|live\"}]}],"
     "\"missing_or_unsure\":[\"\"]}.\n"
     "List EVERY printable panel/graphic you can see.\n"
@@ -190,8 +192,10 @@ AI_PROMPT = (
     "\"dims_shown\":false, and DO NOT estimate, infer, calculate, or guess it from the booth size or typical panels — "
     "a wrong printed size is far worse than a blank one. Add every panel whose size is not shown to "
     "\"missing_or_unsure\". Set \"dims_shown\":true only when the size is actually printed in the package.\n"
-    "FINISH (guesses ARE allowed here): for EVERY panel give a best-guess finish/substrate from this list: "
-    + ", ".join(FINISH_OPTIONS) + ". Never leave finish blank — pick the most likely one even if not stated, but set "
+    "FINISH + FINISHING TYPE (guesses ARE allowed here, unlike sizes): for EVERY panel give a best-guess "
+    "finish/substrate from " + ", ".join(FINISH_OPTIONS) + "; and a best-guess finishing/construction type from "
+    + ", ".join(FINISHING_TYPES) + " (or another if clearly different). Never leave finish blank — pick the most "
+    "likely even if not stated — but set "
     "\"finish_confidence\" (low/medium/high) and keep \"needs_confirm\" true so a human confirms each. Also state "
     "single vs double sided, whether it has a door (which side), and any keep-clear areas (TVs, shelves, fridges, "
     "glass displays).\n"
@@ -223,22 +227,28 @@ def ai_enrich(path, n_pages, det_panels):
                 pass
 
 
-def ai_finish_guesses(ai, panels):
-    """Map text-pass panel name -> AI best-guess finish, for panels the AI proposed
-    a usable (non-blank, non-TBD) finish for. Safe on dry-run/error/text-only AI
-    payloads (returns {}). These are guesses a human must still confirm."""
+def ai_field_guesses(ai, panels, field):
+    """Map text-pass panel name -> AI best-guess for `field` (e.g. 'finish' or
+    'finishing_type'), for panels the AI proposed a usable (non-blank, non-TBD)
+    value for. Safe on dry-run/error/text-only payloads (returns {}). These are
+    guesses a human must still confirm. Pure."""
     if not isinstance(ai, dict) or ai.get("_status") != "live":
         return {}
     by_norm = {norm_name(p["name"]): p["name"] for p in panels}
     out = {}
     for ap in ai.get("panels", []) or []:
-        fin = str(ap.get("finish", "")).strip()
-        if not fin or fin.upper() == "TBD":
+        val = str(ap.get(field, "")).strip()
+        if not val or val.upper() == "TBD":
             continue
         name = by_norm.get(norm_name(str(ap.get("name", ""))))
         if name and name not in out:
-            out[name] = fin
+            out[name] = val
     return out
+
+
+def ai_finish_guesses(ai, panels):
+    """AI best-guess finish per text-pass panel name (a human still confirms)."""
+    return ai_field_guesses(ai, panels, "finish")
 
 
 def ai_surface_lines(ai):
@@ -286,6 +296,7 @@ def ai_seed_panels(ai):
         sided = str(p.get("sided", "single")).strip().lower()
         seeded.append({"name": name, "w": float(w), "h": float(h),
                        "finish": str(p.get("finish", "")).strip() or "TBD",
+                       "finishing_type": str(p.get("finishing_type", "")).strip() or "TBD",
                        "sided": sided if sided in ("single", "double") else "single",
                        "needs_confirm": True, "_source": "AI vision (CONFIRM size + finish)"})
     return seeded, undim
@@ -324,7 +335,13 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
         if ai_finishes:
             guesses = ", ".join(f"{n}: {g}" for n, g in ai_finishes.items())
             finish_line = f"**Finish / substrate** per panel ({guesses}) — AI best-guess, CONFIRM"
-    todo = [finish_line,
+    finishing_line = "**Finishing type** per panel (SEG, Pole Pocket, Direct Print, Door, Corner Post…)"
+    ft_guesses = ai_field_guesses(ai, panels, "finishing_type") if (ai and panel_source != "ai-vision") else {}
+    if ft_guesses:
+        finishing_line = ("**Finishing type** per panel ("
+                          + ", ".join(f"{n}: {g}" for n, g in ft_guesses.items()) + ") — AI best-guess, CONFIRM")
+    todo = [finish_line, finishing_line,
+            "**Quantity** per panel (known by the proof stage)",
             "**Single vs double-sided** per structure (defaulted to single)",
             "**Door** — which wall + side (lift hardware from the 1Mx8 templates)",
             "**Keep-clear zones** — TVs, shelves, fridges, displays: size + position",

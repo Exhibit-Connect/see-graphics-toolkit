@@ -1,0 +1,76 @@
+<svg viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg" role="img" font-family="var(--font-sans, Arial, Helvetica, sans-serif)">
+<title>The SEE booth-graphics workflow: who does each step and with which tool</title>
+<desc>Eight steps, top to bottom. 1: the 3D team makes the graphic-size handoff (the Syntron file is an example). 2: intake.py turns it into the booth file, the master list. 3: SEE_Wall_Template_Generator.jsx (in Illustrator) builds the wall templates, the design canvases. 4: generate_spec_packet.py makes the client size sheet (example 4), sent to the client. 5: the client builds artwork on the template and returns it. 6: proofer.py checks the returned artwork (example 5). 7: make_proof.py builds the proof the client signs (example 6 for one graphic, 7 for the whole job). 8: print vendor and install. Steps 2, 3, 4 and 6 are all built from the one booth file. Red steps involve the client; grey steps are internal.</desc>
+
+<text x="40" y="26" font-size="17" font-weight="700" fill="var(--text-primary, #1a1a1a)">The graphics flow — who does each step, and with which tool</text>
+<circle cx="46" cy="46" r="5" fill="var(--c-red, #ED1C24)"/>
+<text x="55" y="50" font-size="11.5" fill="var(--text-secondary, #555)">the client is involved</text>
+<circle cx="196" cy="46" r="5" fill="var(--text-muted, #9a9a9a)"/>
+<text x="205" y="50" font-size="11.5" fill="var(--text-secondary, #555)">internal / our team</text>
+
+<!-- 1 -->
+<rect x="70" y="66" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="74" x2="80" y2="112" stroke="var(--text-muted, #9a9a9a)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="89" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">1 · Make the graphic-size handoff</text>
+<text x="96" y="107" font-size="11" fill="var(--text-secondary, #555)">3D designer (Matt's team) · their 3D software</text>
+<text x="620" y="97" font-size="11" font-weight="600" text-anchor="end" fill="var(--text-muted, #9a9a9a)">the Syntron file is this</text>
+<line x1="351" y1="123" x2="351" y2="141" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 2 -->
+<rect x="70" y="144" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="152" x2="80" y2="190" stroke="var(--text-muted, #9a9a9a)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="167" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">2 · Turn it into the booth file</text>
+<text x="96" y="185" font-size="11" fill="var(--text-secondary, #555)">Tool: <tspan font-family="var(--font-mono, monospace)" fill="var(--text-primary, #1a1a1a)">intake.py</tspan> · automatic</text>
+<text x="620" y="175" font-size="11" font-weight="600" text-anchor="end" fill="var(--text-muted, #9a9a9a)">the master list — everything below uses it</text>
+<line x1="351" y1="201" x2="351" y2="219" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 3 -->
+<rect x="70" y="222" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="230" x2="80" y2="268" stroke="var(--text-muted, #9a9a9a)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="245" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">3 · Build the wall templates</text>
+<text x="96" y="263" font-size="11" fill="var(--text-secondary, #555)">Tool: <tspan font-family="var(--font-mono, monospace)" fill="var(--text-primary, #1a1a1a)">SEE_Wall_Template_Generator.jsx</tspan> · in Illustrator, by a designer</text>
+<text x="620" y="253" font-size="11" font-weight="600" text-anchor="end" fill="var(--text-muted, #9a9a9a)">the design canvas</text>
+<line x1="351" y1="279" x2="351" y2="297" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 4 -->
+<rect x="70" y="300" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="308" x2="80" y2="346" stroke="var(--c-red, #ED1C24)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="323" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">4 · Make the client size sheet</text>
+<text x="96" y="341" font-size="11" fill="var(--text-secondary, #555)">Tool: <tspan font-family="var(--font-mono, monospace)" fill="var(--text-primary, #1a1a1a)">generate_spec_packet.py</tspan> · automatic</text>
+<text x="620" y="331" font-size="11" font-weight="600" text-anchor="end" fill="var(--c-red, #ED1C24)">example 4 &#183; to client</text>
+<line x1="351" y1="357" x2="351" y2="375" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 5 -->
+<rect x="70" y="378" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="386" x2="80" y2="424" stroke="var(--c-red, #ED1C24)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="401" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">5 · Client builds + returns artwork</text>
+<text x="96" y="419" font-size="11" fill="var(--text-secondary, #555)">the client — designs on the template, to the size sheet</text>
+<text x="620" y="409" font-size="11" font-weight="600" text-anchor="end" fill="var(--c-red, #ED1C24)">&#8592; from client</text>
+<line x1="351" y1="435" x2="351" y2="453" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 6 -->
+<rect x="70" y="456" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="464" x2="80" y2="502" stroke="var(--text-muted, #9a9a9a)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="479" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">6 · Check the returned artwork</text>
+<text x="96" y="497" font-size="11" fill="var(--text-secondary, #555)">Tool: <tspan font-family="var(--font-mono, monospace)" fill="var(--text-primary, #1a1a1a)">proofer.py</tspan> · size, color, resolution, fonts, spelling</text>
+<text x="620" y="487" font-size="11" font-weight="600" text-anchor="end" fill="var(--text-muted, #9a9a9a)">example 5</text>
+<line x1="351" y1="513" x2="351" y2="531" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 7 -->
+<rect x="70" y="534" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="542" x2="80" y2="580" stroke="var(--c-red, #ED1C24)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="557" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">7 · Proof — client signs off</text>
+<text x="96" y="575" font-size="11" fill="var(--text-secondary, #555)">Tool: <tspan font-family="var(--font-mono, monospace)" fill="var(--text-primary, #1a1a1a)">make_proof.py</tspan> · locked, dated record</text>
+<text x="620" y="565" font-size="11" font-weight="600" text-anchor="end" fill="var(--c-red, #ED1C24)">example 6 (one) / 7 (whole job) &#183; to client</text>
+<line x1="351" y1="591" x2="351" y2="609" stroke="var(--text-muted, #9a9a9a)" stroke-width="1.5" marker-end="url(#ar)"/>
+
+<!-- 8 -->
+<rect x="70" y="612" width="560" height="54" rx="9" fill="var(--surface-1, #fff)" stroke="var(--border, #e2e2e2)"/>
+<line x1="80" y1="620" x2="80" y2="658" stroke="var(--text-muted, #9a9a9a)" stroke-width="4" stroke-linecap="round"/>
+<text x="96" y="635" font-size="14" font-weight="700" fill="var(--text-primary, #1a1a1a)">8 · Print, then install</text>
+<text x="96" y="653" font-size="11" fill="var(--text-secondary, #555)">print vendor + install crew</text>
+<text x="620" y="643" font-size="11" font-weight="600" text-anchor="end" fill="var(--text-muted, #9a9a9a)">vendor</text>
+
+<text x="40" y="688" font-size="10.5" fill="var(--text-muted, #9a9a9a)">One booth file (step 2) feeds steps 3, 4 and 6 — so templates, the client sheet, and the checks can never disagree.</text>
+<defs><marker id="ar" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--text-muted, #9a9a9a)"/></marker></defs>
+</svg>

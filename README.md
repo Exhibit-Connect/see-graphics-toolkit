@@ -19,6 +19,7 @@ see-graphics-toolkit/
 1. **`How_It_Works_Overview.pdf`** — one-page picture of the whole flow.
 2. **`Graphics_Design_AI_Brief.pdf`** — what each stage fixes, live vs. coming.
 3. **`Instructions.md`** — plain-language, step-by-step (written assuming Claude is helping).
+4. **`Workflow_Map.png`** — the whole flow as one diagram, with the tool used at each step and where each `examples/` file fits.
 
 ## The flow (and the tool for each step)
 | Step | Tool (`tools/`) | What it does |

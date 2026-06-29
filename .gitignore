@@ -21,6 +21,8 @@ docs/*.html
 _intake_*.png
 _intake_ai_dryrun.json
 _proof_thumb.png
+# demo rehearsal outputs — hold renamed copies of client (Syntron) data that dodge *Graphic_Dimensions*
+demo_scratch/
 
 # OS / Python
 .DS_Store

@@ -41,6 +41,7 @@ __pycache__/
 .pytest_cache/
 .venv*/
 *.zip
-CLAUDE.md
+# internal-only Claude context (client names, people, strategy) — the PUBLIC CLAUDE.md is committed
+CLAUDE.local.md
 # internal call-prep / strategy notes (client names + internal plans — never public)
 Call_Prep_Notes.md

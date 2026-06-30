@@ -21,11 +21,11 @@ branded PDF report via headless Chrome. Network not required.
 NOTE: spelling here uses the system word list as an offline stand-in - this
 is exactly where an AI/LLM spell+grammar pass plugs in when keys are available.
 """
-import json, sys, os, re, math, subprocess, tempfile, shutil, html, time
+import json, sys, os, re, math, subprocess, html, base64
 import branding
+import render
 
 RED = "#ED1C24"
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 DICT = "/usr/share/dict/words"
 TOL = 0.08  # inch tolerance on size checks
 RASTER_EXT = (".tif", ".tiff", ".jpg", ".jpeg", ".png", ".psd", ".bmp", ".gif")
@@ -385,7 +385,136 @@ def run_checks(path, spec, panel_arg=None):
     results["spelling"] = check_spelling(info)
     statuses = [s for s, _ in results.values()]
     verdict = "FAIL" if "FAIL" in statuses else ("REVIEW" if "WARN" in statuses else "PASS")
-    return {"panel": panel, "how": how, "info": info, "results": results, "verdict": verdict}
+    fixes = fix_instructions(results, info, spec, panel)
+    return {"panel": panel, "how": how, "info": info, "results": results,
+            "verdict": verdict, "fixes": fixes}
+
+
+# ---------- fix-it instructions + marked-up preview (never alters the file) ----------
+def fix_instructions(results, info, spec, panel):
+    """Translate each non-PASS check into a precise, plain-English instruction a
+    client can act on (the exact target size, the CMYK step, the ppi threshold,
+    etc.). We NEVER change the artwork — we only say exactly what to fix.
+    Deterministic + pure: reads the already-computed `results`/`info` + the booth
+    spec. Returns [{check, severity, text}, ...] — empty when everything PASSES."""
+    exp, bleed, sc = expected_sizes(spec, panel)
+    fixes = []
+
+    def add(check, status, text):
+        fixes.append({"check": check, "severity": status, "text": text})
+
+    st = results.get("size", ("PASS", ""))[0]
+    if st == "FAIL":
+        ftw, fth = exp["full trim"]
+        fbw, fbh = exp["full + bleed"]
+        hbw, hbh = exp["half + bleed"]
+        add("size", st,
+            f'Resize to the panel. Finished (trim) size is {ftw:g}" × {fth:g}"; add {bleed:g}" bleed on every '
+            f'side and deliver {fbw:g}" × {fbh:g}". (Half scale — {hbw:g}" × {hbh:g}" — is also accepted.)')
+
+    st, cmsg = results.get("color", ("PASS", ""))
+    if st == "FAIL":
+        add("color", st,
+            "Convert the file to CMYK — it currently contains RGB. Set the document color mode to CMYK and "
+            "re-export; check that reds and blues still look right afterward, and use Pantone/spot colors "
+            "where exact brand color matters.")
+    elif st == "WARN":
+        if "gray" in cmsg.lower():
+            add("color", st, "This file is grayscale (black & white). If it should be full color, re-export "
+                             "in CMYK; if black & white is intended, no change is needed.")
+        else:
+            add("color", st, "Color space couldn't be confirmed. Export as CMYK (or CMYK/Pantone) so colors "
+                             "print as intended.")
+
+    st = results.get("resolution", ("PASS", ""))[0]
+    ppi = info.get("min_ppi") or info.get("dpi")   # PDFs carry min_ppi; rasters carry dpi
+    if st == "FAIL":
+        howlow = f"the lowest image is about {ppi} ppi" if ppi else "an image is under 120 ppi"
+        add("resolution", st,
+            f'Increase image resolution — {howlow} at final size, and print needs 120–150. Use a '
+            f'higher-resolution original, or place the image smaller, so every image is at least 120 ppi '
+            f'at the printed size.')
+    elif st == "WARN" and ppi and ppi > 150:
+        add("resolution", st,
+            f'Resolution is higher than needed (~{ppi} ppi). 150 ppi at final size is plenty — you can '
+            f'downsample to shrink the file (optional, not required).')
+
+    if results.get("fonts", ("PASS", ""))[0] == "WARN":
+        add("fonts", "WARN",
+            "Convert all text to outlines (vector) before sending the final file, so fonts can't reflow or "
+            "substitute. Keep a copy with live text for spell-checking.")
+
+    if results.get("marks", ("PASS", ""))[0] == "WARN":
+        add("marks", "WARN",
+            "Turn OFF printer marks (crop, registration and color bars) in your export settings — submit the "
+            "artwork with bleed but no marks.")
+
+    st, smsg = results.get("spelling", ("PASS", ""))
+    if st == "WARN":
+        words = smsg.split(": ", 1)[-1] if ": " in smsg else ""
+        text = "Double-check spelling on the flagged words (some may be brand or proper names, which are fine)."
+        if words:
+            text += " Words to review: " + words
+        add("spelling", st, text)
+
+    return fixes
+
+
+def overlay_boxes(w_px, h_px, frac_w, frac_h):
+    """Pixel rectangle (x0, y0, x1, y1) for the safe-area inset on a w×h
+    thumbnail, given the safe margin as a fraction of the panel's width/height.
+    Pure — the testable geometry behind the marked-up preview."""
+    x0 = round(w_px * frac_w)
+    y0 = round(h_px * frac_h)
+    x1 = round(w_px * (1 - frac_w))
+    y1 = round(h_px * (1 - frac_h))
+    return x0, y0, x1, y1
+
+
+def marked_preview(path, info, spec, panel, fixes):
+    """Best-effort marked-up PNG (base64 data URI) of the artwork: a ribbon with
+    the fix summary, plus — when the size is correct — the safe-area outline so a
+    client sees where text must stay. Returns the data URI, or None if no preview
+    can be made. Writes only a throwaway temp PNG; the client's file is untouched.
+    Box math lives in `overlay_boxes` (pure + tested)."""
+    ext = os.path.splitext(path)[1].lower()
+    tmp = os.path.abspath("_proof_mark.png")
+    try:
+        from PIL import Image, ImageDraw
+        if ext in RASTER_EXT:
+            im = Image.open(path)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+        else:
+            subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
+                            "-dLastPage=1", "-o", tmp, path], capture_output=True)
+            if not os.path.exists(tmp):
+                return None
+            im = Image.open(tmp).convert("RGB")
+        im.thumbnail((900, 900))
+        W, H = im.size
+        draw = ImageDraw.Draw(im, "RGBA")
+        size_bad = any(f.get("check") == "size" for f in (fixes or []))
+        if not size_bad and panel.get("w") and panel.get("h"):
+            sm = spec.get("settings", {}).get("safe_margin_in", 4.0)
+            fw = min(0.45, sm / panel["w"])
+            fh = min(0.45, sm / panel["h"])
+            x0, y0, x1, y1 = overlay_boxes(W, H, fw, fh)
+            draw.rectangle([x0, y0, x1, y1], outline=(236, 0, 140, 255), width=2)
+        labels = list(dict.fromkeys(f.get("check", "").upper() for f in (fixes or [])))
+        ribbon = ("FIX: " + ", ".join(labels)) if labels else "PASS — no changes needed"
+        rh = max(16, H // 24)
+        draw.rectangle([0, 0, W, rh], fill=((237, 28, 36, 235) if labels else (46, 158, 64, 235)))
+        draw.text((6, max(1, rh // 2 - 6)), ribbon, fill=(255, 255, 255, 255))
+        im.save(tmp)
+        return "data:image/png;base64," + base64.b64encode(open(tmp, "rb").read()).decode()
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 # ---------- report ----------
@@ -393,40 +522,12 @@ ORDER = ["size", "color", "resolution", "fonts", "marks", "spelling"]
 BADGE = {"PASS": "#2E9E40", "WARN": "#F7941E", "FAIL": RED, "NA": "#9a9a9a"}
 
 
-def render_pdf(html_path, pdf_path):
-    """Headless Chrome HTML->PDF. Polls for the file then always terminates Chrome
-    (some Chrome builds write the PDF but never exit), so this can't hang."""
-    if not os.path.exists(CHROME):
-        return False
-    try:
-        os.remove(pdf_path)
-    except OSError:
-        pass
-    prof = tempfile.mkdtemp(prefix="see_chrome_")
-    proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-                             "--no-pdf-header-footer", "--virtual-time-budget=2000",
-                             f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}", f"file://{html_path}"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ok = False
-    for _ in range(40):  # up to ~20s
-        time.sleep(0.5)
-        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500:
-            ok = True
-            break
-        if proc.poll() is not None:
-            break
-    try:
-        proc.terminate(); proc.wait(timeout=3)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    shutil.rmtree(prof, ignore_errors=True)
-    return ok or (os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500)
+# HTML->PDF lives in render.py now; kept as proofer.render_pdf so callers
+# (make_proof.py, this module's CLI) don't change.
+render_pdf = render.html_to_pdf
 
 
-def build_report_html(fname, panel, how, results, verdict):
+def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b64=None):
     rows = ""
     for k in ORDER:
         if k not in results:
@@ -436,6 +537,15 @@ def build_report_html(fname, panel, how, results, verdict):
           <td><span class="b" style="background:{BADGE[st]}">{st}</span></td>
           <td class="msg">{html.escape(msg)}</td></tr>"""
     vcol = BADGE[verdict]
+    fix_html = ""
+    if fixes:
+        lis = "".join(f'<li><b>{html.escape(f["check"].title())}:</b> {html.escape(f["text"])}</li>'
+                      for f in fixes)
+        fix_html = (f'<div class="fixes"><div class="fixhd">What to change — give this to the client</div>'
+                    f'<ol>{lis}</ol></div>')
+    mark_html = (f'<div class="mark"><img src="{preview_b64}" alt="marked-up preview">'
+                 f'<div class="markcap">Marked-up preview (the file itself is unchanged)</div></div>'
+                 if preview_b64 else "")
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: letter portrait; margin: 0.6in; }}
       body {{ font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; font-size:12px; }}
@@ -449,6 +559,13 @@ def build_report_html(fname, panel, how, results, verdict):
       td.ck {{ font-weight:700; width:14%; }}
       .b {{ color:#fff; padding:2px 10px; border-radius:11px; font-weight:700; font-size:10.5px; }}
       .msg {{ font-size:11.5px; }}
+      .fixes {{ margin:12px 0; padding:10px 14px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E; border-radius:5px; }}
+      .fixhd {{ font-weight:700; color:#7a4a00; margin-bottom:5px; }}
+      .fixes ol {{ margin:0; padding-left:20px; }}
+      .fixes li {{ margin:4px 0; font-size:11.5px; color:#5a3800; }}
+      .mark {{ margin:10px 0; text-align:center; }}
+      .mark img {{ max-width:100%; max-height:340px; border:1px solid #ddd; border-radius:6px; }}
+      .markcap {{ color:#999; font-size:9.5px; margin-top:4px; }}
       footer {{ margin-top:16px; color:#888; font-size:9.5px; border-top:1px solid #ddd; padding-top:6px; }}
       {branding.BRAND_CSS}
     </style></head><body>
@@ -456,6 +573,8 @@ def build_report_html(fname, panel, how, results, verdict):
       <h1>{html.escape(os.path.basename(fname))}</h1>
       <div class="meta">Panel: <b>{html.escape(panel)}</b> ({how}) &nbsp;·&nbsp; checked against the booth spec</div>
       <div class="verdict">{verdict}</div>
+      {fix_html}
+      {mark_html}
       <table><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table>
       <footer>SEE AI Proofer · automated preflight against the single-source booth spec · WARN/FAIL items need a human's eyes before approval.</footer>
     </body></html>"""
@@ -509,14 +628,22 @@ def main():
             if k in results:
                 st, msg = results[k]
                 print(f"  [{st:4}] {k:11} {msg}")
+        fixes = r.get("fixes")
+        if fixes:
+            print("  what to change (client-ready):")
+            for f in fixes:
+                print(f"    - {f['check']}: {f['text']}")
 
         base = os.path.splitext(os.path.basename(fname))[0]
         json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
-                   "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()}},
+                   "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
+                   "fixes": fixes or []},
                   open(f"{base}_preflight.json", "w"), indent=2)
+        preview = marked_preview(fname, info, spec, panel, fixes)
         hp = os.path.abspath(f"{base}_preflight.html")
         open(hp, "w").write(build_report_html(fname, panel["name"], how, results,
-                            "PASS" if verdict == "PASS" else ("NEEDS REVIEW" if verdict == "REVIEW" else "FAIL")))
+                            "PASS" if verdict == "PASS" else ("NEEDS REVIEW" if verdict == "REVIEW" else "FAIL"),
+                            fixes=fixes, preview_b64=preview))
         if render_pdf(hp, os.path.abspath(f"{base}_preflight.pdf")):
             print(f"  report: {base}_preflight.pdf")
         else:

@@ -33,6 +33,12 @@ booth_spec_*_DRAFT.json
 *_intake_review.md
 # template preview written to cwd (can carry client data, e.g. a Syntron preview)
 templates_preview.*
+# job dashboard written to cwd (lists real jobs — can carry client data)
+job_dashboard.*
+# client design templates written to cwd (per-panel; can carry client data)
+*_Client_Templates.html
+*_Client_Templates.pdf
+*_template.pdf
 
 # OS / Python
 .DS_Store
@@ -45,3 +51,8 @@ __pycache__/
 CLAUDE.local.md
 # internal call-prep / strategy notes (client names + internal plans — never public)
 Call_Prep_Notes.md
+# leadership-share PDFs built from the public example (regenerate from the tools; keep out of the repo)
+*_SAMPLE.pdf
+SEE_Job_Dashboard*.pdf
+SEE_Artwork_Check*.pdf
+SEE_Client_Design_Templates*.pdf

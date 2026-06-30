@@ -36,6 +36,46 @@ def esc(s):
     return html.escape(str(s))
 
 
+def panel_guides_svg(panel, settings, door_standard, x0, top, px):
+    """SVG fragment for ONE panel's guides — bleed, trim, visual safe area,
+    keep-clear / live zones, and the door (cut + handle/lock holes) — with the
+    bleed-box top-left at (x0, top) at `px` pixels per inch. Pure string builder,
+    shared by the grid preview AND the per-panel client template so the geometry
+    can never diverge. Colors come from the module-level C map."""
+    bleed = settings.get("bleed_per_side_in", 1.0)
+    safe = settings.get("safe_margin_in", 4.0)
+    w, h = panel["w"], panel["h"]
+    pbw, pbh = (w + 2 * bleed) * px, (h + 2 * bleed) * px
+    bpx, spx = bleed * px, safe * px
+    o = [f'<rect x="{x0:.1f}" y="{top:.1f}" width="{pbw:.1f}" height="{pbh:.1f}" fill="none" stroke="{C["bleed"]}" stroke-width="2"/>']
+    tlx, tty, tw, th = x0 + bpx, top + bpx, w * px, h * px
+    tby = tty + th
+    o.append(f'<rect x="{tlx:.1f}" y="{tty:.1f}" width="{tw:.1f}" height="{th:.1f}" fill="none" stroke="{C["trim"]}" stroke-width="1.6"/>')
+    if w - 2 * safe > 0 and h - 2 * safe > 0:
+        o.append(f'<rect x="{tlx+spx:.1f}" y="{tty+spx:.1f}" width="{(w-2*safe)*px:.1f}" height="{(h-2*safe)*px:.1f}" '
+                 f'fill="none" stroke="{C["safe"]}" stroke-width="1.2" stroke-dasharray="5 4"/>')
+    for z in panel.get("zones", []):
+        col = C["live"] if z.get("kind") == "live" else C["keep"]
+        rx, ry = tlx + z["x"] * px, tty + (h - z["y"] - z["h"]) * px
+        o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}22" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
+        tag = "LIVE" if z.get("kind") == "live" else "keep clear"
+        o.append(f'<text x="{rx+4:.1f}" y="{ry+13:.1f}" font-size="8.5" font-weight="700" fill="{col}">{esc(tag)}</text>')
+    side = panel.get("door")
+    if side in ("left", "right") and door_standard:
+        dW, dH = door_standard.get("panel_w_in", 39.125) * px, door_standard.get("panel_h_in", 95.21) * px
+        dl = tlx if side == "left" else (tlx + tw - dW)
+        dtop = tby - dH
+        o.append(f'<rect x="{dl:.1f}" y="{dtop:.1f}" width="{dW:.1f}" height="{dH:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
+        off = door_standard.get("edge_offset_in", 4.3125) * px
+        cx = (dl + off) if side == "left" else (dl + dW - off)
+        for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
+            if hole:
+                cy = tby - hole.get("y_from_floor_in", 38) * px
+                o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.6"/>')
+        o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
+    return "\n".join(o)
+
+
 def build_svg(spec):
     st = spec.get("settings", {})
     bleed = st.get("bleed_per_side_in", 1.0)
@@ -82,33 +122,7 @@ def build_svg(spec):
             py = y + LBL + (rh - pbh)            # bottom-align panels in the row
             o.append(f'<text x="{x0:.1f}" y="{y+18:.1f}" font-size="12.5" font-weight="700" fill="#111">{esc(p["name"])}</text>')
             o.append(f'<text x="{x0:.1f}" y="{y+31:.1f}" font-size="10.5" fill="#666">{p["w"]}" × {p["h"]}"</text>')
-            bpx, spx = bleed * PXI, safe * PXI
-            o.append(f'<rect x="{x0:.1f}" y="{py:.1f}" width="{pbw:.1f}" height="{pbh:.1f}" fill="none" stroke="{C["bleed"]}" stroke-width="2"/>')
-            tlx, tty, tw, th = x0 + bpx, py + bpx, p["w"] * PXI, p["h"] * PXI
-            tby = tty + th
-            o.append(f'<rect x="{tlx:.1f}" y="{tty:.1f}" width="{tw:.1f}" height="{th:.1f}" fill="none" stroke="{C["trim"]}" stroke-width="1.6"/>')
-            if p["w"] - 2 * safe > 0 and p["h"] - 2 * safe > 0:
-                o.append(f'<rect x="{tlx+spx:.1f}" y="{tty+spx:.1f}" width="{(p["w"]-2*safe)*PXI:.1f}" height="{(p["h"]-2*safe)*PXI:.1f}" '
-                         f'fill="none" stroke="{C["safe"]}" stroke-width="1.2" stroke-dasharray="5 4"/>')
-            for z in p.get("zones", []):
-                col = C["live"] if z.get("kind") == "live" else C["keep"]
-                rx, ry = tlx + z["x"] * PXI, tty + (p["h"] - z["y"] - z["h"]) * PXI
-                o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*PXI:.1f}" height="{z["h"]*PXI:.1f}" fill="{col}22" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
-                tag = "LIVE" if z.get("kind") == "live" else "keep clear"
-                o.append(f'<text x="{rx+4:.1f}" y="{ry+13:.1f}" font-size="8.5" font-weight="700" fill="{col}">{esc(tag)}</text>')
-            side = p.get("door")
-            if side in ("left", "right") and door:
-                dW, dH = door.get("panel_w_in", 39.125) * PXI, door.get("panel_h_in", 95.21) * PXI
-                dl = tlx if side == "left" else (tlx + tw - dW)
-                dtop = tby - dH
-                o.append(f'<rect x="{dl:.1f}" y="{dtop:.1f}" width="{dW:.1f}" height="{dH:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
-                off = door.get("edge_offset_in", 4.3125) * PXI
-                cx = (dl + off) if side == "left" else (dl + dW - off)
-                for hole in (door.get("handle", {}), door.get("lock", {})):
-                    if hole:
-                        cy = tby - hole.get("y_from_floor_in", 38) * PXI
-                        o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*PXI:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.6"/>')
-                o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
+            o.append(panel_guides_svg(p, st, door, x0, py, PXI))
         y += LBL + rh + GAP
     o.append("</svg>")
     return "\n".join(o), len(panels)

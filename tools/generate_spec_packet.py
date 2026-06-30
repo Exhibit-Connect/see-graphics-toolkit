@@ -11,9 +11,10 @@ Usage:
 
 Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 """
-import json, sys, os, subprocess, html, tempfile, shutil, time
+import json, sys, os, html
 import proofer
 import branding
+import render
 
 RED = "#ED1C24"
 def find_default_spec():
@@ -25,7 +26,6 @@ def find_default_spec():
         if hits:
             return hits[0]
     return "booth_spec.json"
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
 def esc(v):
@@ -168,37 +168,6 @@ def build_html(spec):
     </body></html>"""
 
 
-def render_chrome(html_path, pdf_path):
-    """HTML->PDF via headless Chrome; polls for the file then always terminates
-    Chrome (some builds write the PDF but never exit), so it can't hang."""
-    try:
-        os.remove(pdf_path)
-    except OSError:
-        pass
-    prof = tempfile.mkdtemp(prefix="see_chrome_")
-    proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-                             "--no-pdf-header-footer", "--virtual-time-budget=2000",
-                             f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}", f"file://{html_path}"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ok = False
-    for _ in range(40):
-        time.sleep(0.5)
-        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500:
-            ok = True
-            break
-        if proc.poll() is not None:
-            break
-    try:
-        proc.terminate(); proc.wait(timeout=3)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    shutil.rmtree(prof, ignore_errors=True)
-    return ok or (os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500)
-
-
 def main():
     spec_path = sys.argv[1] if len(sys.argv) > 1 else find_default_spec()
     spec = json.load(open(spec_path))
@@ -212,7 +181,7 @@ def main():
     if unv:
         print(f"⚠  {len(unv)} UNVERIFIED panel(s) (AI/OCR-sourced): {', '.join(unv)} — confirm before sending to the client.")
 
-    if os.path.exists(CHROME) and render_chrome(html_path, pdf_path):
+    if render.html_to_pdf(html_path, pdf_path):
         print("PDF: ", pdf_path, f"({os.path.getsize(pdf_path)} bytes)")
     else:
         print("PDF step skipped — open the HTML and Print -> Save as PDF.")

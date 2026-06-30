@@ -99,3 +99,61 @@ def test_check_resolution_raster_thresholds():
 
 def test_check_resolution_pdf_vector_only_passes():
     assert proofer.check_resolution({"kind": "pdf", "images": []})[0] == "PASS"
+
+
+# ---------- fix-it instructions (Feature 3) ----------
+PANEL = SPEC["panels"][0]   # Wall A: 100 x 200, bleed 1, scale 0.5
+
+
+def test_fix_instructions_empty_when_all_pass():
+    results = {"size": ("PASS", ""), "color": ("PASS", ""), "resolution": ("PASS", ""),
+               "fonts": ("PASS", ""), "marks": ("PASS", ""), "spelling": ("PASS", "")}
+    assert proofer.fix_instructions(results, {}, SPEC, PANEL) == []
+
+
+def test_fix_instructions_size_fail_names_the_target_size():
+    fixes = proofer.fix_instructions({"size": ("FAIL", "wrong")}, {}, SPEC, PANEL)
+    assert len(fixes) == 1 and fixes[0]["check"] == "size"
+    text = fixes[0]["text"]
+    assert '100"' in text and '200"' in text          # full trim
+    assert '102"' in text and '202"' in text           # + 1" bleed each side
+    assert "bleed" in text.lower()
+
+
+def test_fix_instructions_rgb_says_convert_to_cmyk():
+    fixes = proofer.fix_instructions({"color": ("FAIL", "contains RGB")}, {}, SPEC, PANEL)
+    assert fixes[0]["check"] == "color" and "CMYK" in fixes[0]["text"]
+
+
+def test_fix_instructions_grayscale_warn_is_distinct():
+    fixes = proofer.fix_instructions({"color": ("WARN", "L (grayscale)")}, {}, SPEC, PANEL)
+    assert fixes[0]["check"] == "color"
+    assert "black & white" in fixes[0]["text"] or "grayscale" in fixes[0]["text"]
+
+
+def test_fix_instructions_resolution_fail_cites_ppi():
+    # PDFs carry min_ppi …
+    fixes = proofer.fix_instructions({"resolution": ("FAIL", "low")}, {"min_ppi": 72}, SPEC, PANEL)
+    assert fixes[0]["check"] == "resolution"
+    assert "72" in fixes[0]["text"] and "120" in fixes[0]["text"]
+
+
+def test_fix_instructions_resolution_fail_uses_raster_dpi():
+    # … rasters carry dpi (regression: must not print "about None ppi")
+    fixes = proofer.fix_instructions({"resolution": ("FAIL", "low")}, {"dpi": 72}, SPEC, PANEL)
+    assert "72" in fixes[0]["text"] and "None" not in fixes[0]["text"]
+
+
+def test_fix_instructions_resolution_fail_no_ppi_is_clean():
+    fixes = proofer.fix_instructions({"resolution": ("FAIL", "low")}, {}, SPEC, PANEL)
+    assert "None" not in fixes[0]["text"] and "under 120 ppi" in fixes[0]["text"]
+
+
+def test_fix_instructions_spelling_lists_words_from_message():
+    fixes = proofer.fix_instructions({"spelling": ("WARN", "2 word(s) to review: Mamas, Creationz")},
+                                     {}, SPEC, PANEL)
+    assert fixes[0]["check"] == "spelling" and "Creationz" in fixes[0]["text"]
+
+
+def test_overlay_boxes_insets_by_fraction():
+    assert proofer.overlay_boxes(100, 200, 0.1, 0.05) == (10, 10, 90, 190)

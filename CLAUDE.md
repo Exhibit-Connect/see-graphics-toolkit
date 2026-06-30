@@ -15,11 +15,14 @@ can never disagree. Define the booth once → everything downstream stays consis
 |------|------|-----|
 | `intake.py` | 3D handoff PDF → draft booth file + a "confirm" checklist; flags page-to-page size conflicts. A **visual/slide-deck handoff** (no extractable text) is read by deterministic **tesseract OCR** of the graphic key; `--ai` adds finish / finishing-type best-guesses and catches surfaces present in the render but missing from the key. | `python3 tools/intake.py handoff.pdf --job "Client - Show - Size" [--ai]` |
 | `SEE_Wall_Template_Generator.jsx` | The production wall templates (Illustrator artboards with bleed/trim/safe guides, door cuts, keep-clear/live zones), from the booth file. **Runs only inside Adobe Illustrator** (File ▸ Scripts ▸ Other Script). | in Illustrator |
-| `preview_templates.py` | Quick PNG/SVG **preview** of the templates from the booth file — no Illustrator needed. | `python3 tools/preview_templates.py [booth.json]` |
+| `preview_templates.py` | Quick PNG/SVG **preview** of all templates from the booth file — no Illustrator needed. Its per-panel guide drawing (`panel_guides_svg`) is shared with `client_templates.py`. | `python3 tools/preview_templates.py [booth.json]` |
+| `client_templates.py` | **Client-ready design templates** (PDF) from the booth file — one page per panel with bleed/trim/safe/keep-clear/live/door guides + exact sizes, openable without Illustrator so clients design on the real layout. Oversized pieces show a tile/seam notice. `--per-panel` also emits one PDF each. | `python3 tools/client_templates.py [booth.json] [--per-panel]` |
 | `generate_spec_packet.py` | Client submission spec sheet (PDF) from the booth file — per-panel size / material / finishing-type / qty / sided / visible area. Stamps an **UNVERIFIED-DIMENSIONS** banner on any unconfirmed panel. | `python3 tools/generate_spec_packet.py [booth.json]` |
-| `proofer.py` | Checks returned client artwork vs the booth file: size, color (flags RGB), resolution, fonts, printer marks, spelling. | `python3 tools/proofer.py artwork.pdf [--panel NAME]` |
-| `make_proof.py` | The client proof: a single item, or a **whole-job document** (cover/summary + one page per graphic). Structured spec block, status legend, disclaimer banner, 3-way sign-off, prepped/QC footer; dated, **locked** sign-off + a log. Refuses to approve a FAIL, a placeholder/blank, or an **unverified** panel. | item: `make_proof.py art.pdf [...] [--approve "Name"]` · job: `make_proof.py a1 a2 …` |
-| `branding.py` | Shared SEE logo + contact header, so every generated document (spec sheet, check report, proof) matches. | (imported by the others) |
+| `proofer.py` | Checks returned client artwork vs the booth file: size, color (flags RGB), resolution, fonts, printer marks, spelling. Adds a plain-English **"what to change" fix list** + a marked-up preview, but **never alters the client's file**. | `python3 tools/proofer.py artwork.pdf [--panel NAME]` |
+| `make_proof.py` | The client proof: a single item, or a **whole-job document** (cover/summary + one page per graphic). Structured spec block, status legend, disclaimer banner, the fix list, 3-way sign-off, prepped/QC footer; dated, **locked** sign-off + a log. Refuses to approve a FAIL, a placeholder/blank, or an **unverified** panel. | item: `make_proof.py art.pdf [...] [--approve "Name"]` · job: `make_proof.py a1 a2 …` |
+| `dashboard.py` | **Job status dashboard** (HTML, `--pdf` for PDF): every active job + its stage (intake / awaiting confirm / in proof / approved), due date + countdown, and risk flags (unverified panels, failed checks, approaching deadline). Built from the booth files + `proof_log.xlsx`; degrades gracefully without them. | `python3 tools/dashboard.py [--jobs-dir DIR] [--pdf]` |
+| `branding.py` | Shared SEE logo + contact header, so every generated document (spec sheet, check report, proof, dashboard, client templates) matches. | (imported by the others) |
+| `render.py` | Shared HTML→PDF helper (poll-then-terminate headless Chrome) used by every PDF-producing tool. | (imported by the others) |
 | `ai_client.py` | Shared OpenRouter client used by the AI steps. | `python3 tools/ai_client.py --check` |
 
 Tools are **location-independent**: they auto-find `examples/*booth_spec*.json` (in cwd / `examples/`) or take a path / `--spec`.
@@ -33,7 +36,8 @@ Tools are **location-independent**: they auto-find `examples/*booth_spec*.json` 
 ## Key principles
 - **Dimensions are NEVER guessed.** If a handoff doesn't print a size, intake flags it to measure rather than inventing one. Finishes / finishing-types *may* be AI best-guessed (low-risk) but are always flagged to confirm.
 - **Confirm-gate.** Panels recovered from a visual handoff are flagged `needs_confirm` (OCR/AI-sourced). `generate_spec_packet` stamps an "UNVERIFIED DIMENSIONS" banner and `make_proof` refuses to approve such a panel, until a human clears the flag — so an unconfirmed size can never reach a client or print.
-- **Oversized pieces.** A panel too big for one Illustrator artboard (about 227″ at build scale — e.g. a full-circumference hanging sign) is **skipped and flagged to tile/seam separately** rather than crashing the run; it still appears on the spec sheet, the checks, and the proof.
+- **Oversized pieces.** A panel too big for one Illustrator artboard (about 227″ at build scale — e.g. a full-circumference hanging sign) is **skipped and flagged to tile/seam separately** rather than crashing the run; it still appears on the spec sheet, the client templates, the checks, and the proof.
+- **Never alter the client's file.** `proofer.py` produces precise fix instructions + a marked-up preview, but it never rewrites the artwork — an automatic RGB→CMYK or resize could silently ruin a print. We say exactly what to change and let a human act.
 
 ## Example job
 `examples/` is a finished, worked example (Mama's Creations), numbered `1 → 7` in workflow order — the booth
@@ -51,8 +55,9 @@ preview rasterizes via **qlmanage**; **Ghostscript** rasterizes PDFs for OCR. **
 runs only inside Illustrator (a `CMYKColor is not defined` error anywhere else is expected).
 
 ## Tests + definition of done
-Run `pip install -r requirements-dev.txt && pytest` (covers the pure helpers in `intake.py` / `proofer.py` /
-`make_proof.py` / `branding.py`). **Extend the suite whenever you add or change logic** in a tool. A behavior
+Run `pip install -r requirements-dev.txt && pytest` (66 tests; covers the pure helpers in `intake.py` /
+`proofer.py` / `make_proof.py` / `branding.py` / `dashboard.py` / `client_templates.py` / `render.py`).
+**Extend the suite whenever you add or change logic** in a tool. A behavior
 change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the two overview
 PDFs in `docs/`) are updated to match.
 

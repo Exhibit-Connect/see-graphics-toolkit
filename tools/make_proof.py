@@ -222,6 +222,8 @@ CSS_PROOF = """
   td.ck { font-weight:700; width:20%; }
   .b { color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }
   .msg { font-size:10px; }
+  ol.fixlist { margin:7px 0 0; padding-left:18px; }
+  ol.fixlist li { font-size:10px; margin:3px 0; color:#7a4a00; }
   .signbox { margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }
   .sign .st { font-weight:700; color:#ED1C24; margin-bottom:7px; }
   .sign .opt { margin-bottom:5px; font-size:12px; }
@@ -300,6 +302,12 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
             chk_rows += (f'<tr><td class="ck">{k.title()}</td>'
                          f'<td><span class="b" style="background:{proofer.BADGE[st]}">{st}</span></td>'
                          f'<td class="msg">{html.escape(msg)}</td></tr>')
+    fixes = res.get("fixes") or []
+    fix_block = ""
+    if fixes:
+        flis = "".join(f'<li><b>{html.escape(f["check"].title())}:</b> {html.escape(f["text"])}</li>'
+                       for f in fixes)
+        fix_block = f'<div class="blk">What to change</div><ol class="fixlist">{flis}</ol>'
     if approve:
         signoff = (f'<div class="stamp">APPROVED &nbsp;·&nbsp; {html.escape(approve)} &nbsp;·&nbsp; {today}</div>'
                    f'<div class="locknote">Locked on approval. Any change after this requires written approval '
@@ -339,6 +347,7 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
           <table class="spec">{spec_rows}</table>
           <div class="blk">Automated preflight checks</div>
           <table class="chk"><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>{chk_rows}</tbody></table>
+          {fix_block}
         </div>
       </div>
       <div class="signbox">{signoff}</div>

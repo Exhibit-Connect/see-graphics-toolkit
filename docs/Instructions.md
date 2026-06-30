@@ -37,11 +37,13 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 ### 3 · Tell the client what to send
 - **Say:** *"Make the client spec sheet from the booth file."*
 - **You get back:** a clean PDF — the sheet you email the client — listing every graphic's **size, material, finishing type, and quantity**, the build rules, the **job number**, and the due date.
+- **Want to go further than a list?** Say: *"Make the client design templates."* You get **one PDF with a page per graphic**, each showing the exact artboard with the bleed, trim, safe and keep‑clear guides drawn on it, plus the true sizes — so the client designs **right on the guides** (no Illustrator needed). It heads off wrong‑size and missing‑bleed files at the source. *(A piece too big for one sheet is marked "tile/seam" — our team handles the seaming.)*
 
 ### 4 · Client sends artwork back → check it
 - **Give Claude:** the client's file(s).
 - **Say:** *"Check this artwork against the booth file."*
 - **You get back:** a **PASS / NEEDS REVIEW / FAIL** report that catches wrong size, low resolution, RGB‑instead‑of‑CMYK, fonts not outlined, and spelling — with notes on what to fix.
+- **Plus a plain‑English fix list.** When something's off, the report adds a **"What to change"** list written for the client — for example *"Resize to 78.12″ × 134.26″ and add 1″ bleed on every side,"* or *"Convert the file to CMYK"* — and a **marked‑up preview**. Claude **never edits the client's file** (an automatic color or size change could ruin a print run); it tells them exactly what to fix, so you can forward it as‑is. The same fix list also appears on the proof.
 
 ### 5 · Send a proof and get sign‑off
 - **Say:** *"Make a proof sheet for this artwork."*
@@ -50,6 +52,12 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 - When the client approves it, **say:** *"Mark it approved by [client name]."*
 - **You get back:** a dated, **locked** approval record (and it's logged). Claude won't finalize an approval if the file still **fails a check** *or* if anything is still marked **"to be confirmed"** — so no half‑finished proof reaches a client.
 - **For a whole job at once:** give Claude **all** the graphics files together and say *"Make the full proof document for this job."* You get **one PDF** — a **cover page** that lists every graphic (size, material, quantity) and then one page per graphic for the client to review and sign.
+
+---
+
+## See every job at a glance
+- **Say:** *"Show me the job dashboard."*
+- **You get back:** one page listing **every active job** and where it stands — **Intake → Awaiting confirm → In proof → Approved** — with the due date, a countdown, and **risk flags** (a size still unconfirmed, a failed check, or a deadline coming up). It reads straight from the booth files and the proof log, so it always matches the other tools. *(Point Claude at your jobs folder once and it tracks them all.)*
 
 ---
 

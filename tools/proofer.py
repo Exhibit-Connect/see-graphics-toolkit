@@ -22,6 +22,7 @@ NOTE: spelling here uses the system word list as an offline stand-in - this
 is exactly where an AI/LLM spell+grammar pass plugs in when keys are available.
 """
 import json, sys, os, re, math, subprocess, tempfile, shutil, html, time
+import branding
 
 RED = "#ED1C24"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -449,8 +450,9 @@ def build_report_html(fname, panel, how, results, verdict):
       .b {{ color:#fff; padding:2px 10px; border-radius:11px; font-weight:700; font-size:10.5px; }}
       .msg {{ font-size:11.5px; }}
       footer {{ margin-top:16px; color:#888; font-size:9.5px; border-top:1px solid #ddd; padding-top:6px; }}
+      {branding.BRAND_CSS}
     </style></head><body>
-      <div class="pill">Artwork Preflight Report</div>
+      {branding.header_html("Artwork Preflight Report")}
       <h1>{html.escape(os.path.basename(fname))}</h1>
       <div class="meta">Panel: <b>{html.escape(panel)}</b> ({how}) &nbsp;·&nbsp; checked against the booth spec</div>
       <div class="verdict">{verdict}</div>

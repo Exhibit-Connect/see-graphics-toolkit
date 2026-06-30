@@ -23,6 +23,16 @@ _intake_ai_dryrun.json
 _proof_thumb.png
 # demo rehearsal outputs — hold renamed copies of client (Syntron) data that dodge *Graphic_Dimensions*
 demo_scratch/
+# tool outputs generated into the repo root at runtime (canonical copies live in examples/)
+*_Spec_Packet.html
+*_Spec_Packet.pdf
+*_JOB_PROOF.html
+*_JOB_PROOF.pdf
+# intake outputs (client-derived; written to cwd when run live, e.g. during a demo)
+booth_spec_*_DRAFT.json
+*_intake_review.md
+# template preview written to cwd (can carry client data, e.g. a Syntron preview)
+templates_preview.*
 
 # OS / Python
 .DS_Store

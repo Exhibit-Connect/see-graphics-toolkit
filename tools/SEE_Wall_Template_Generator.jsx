@@ -75,7 +75,11 @@ var DEFAULT_SPEC = {
 
 function loadSpec() {
   try {
-    var f = File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
+    // A preset SEE_SPEC_PATH lets the script run head-less (no dialog) for
+    // automation/testing; when it's undefined the normal file picker shows.
+    var f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
+              ? new File(SEE_SPEC_PATH)
+              : File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
     if (f) {
       f.encoding = "UTF-8";
       f.open("r");
@@ -109,6 +113,7 @@ var DOOR          = SPEC.door_standard || {
 // =====================================================================
 var PT       = 72;                 // points per inch
 var GAP_IN   = 6;                  // spacing between artboards (inches, scaled)
+var MAX_AB_PT = 226 * 72;          // Illustrator's max artboard side is ~227.5"; guard just under it
 var MAX_ROW_W_PT = 200 * PT;       // wrap to a new row before hitting Illustrator's canvas limit
 
 function inToPt(v)   { return v * PT; }
@@ -187,7 +192,7 @@ function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
   }
 }
 
-function addLabel(layer, xPt, yPt, panel, displayName) {
+function addLabel(layer, xPt, yPt, panel, displayName, maxWidthPt, maxHeightPt) {
   var t = layer.textFrames.add();
   var details = "Trim " + panel.w + '" x ' + panel.h + '"   |   Bleed ' + BLEED_PER_SIDE +
                 '"/side (' + (BLEED_PER_SIDE * 2) + '" total)   |   Built at ' + (SCALE * 100) +
@@ -200,10 +205,30 @@ function addLabel(layer, xPt, yPt, panel, displayName) {
   if (panel.note) details += "\r" + panel.note;
   t.contents = displayName + "\r" + details;
   t.position = [xPt, yPt];
+  var nameSize = 56, bodySize = 30;   // base sizes for a normal panel
   try {
+    // Fit the label by CALCULATION — no width-measuring and no app.redraw().
+    // (Forcing redraws during a scripted build can crash Illustrator, which is
+    // what happened on the narrow plexi panel.) Estimate each line's width from
+    // its character count and shrink the whole block once, so a narrow panel
+    // can't clip the title and a short one can't overrun its height.
+    var R = 0.62, LH = 1.25;   // ~glyph-width/font-size and ~line-height/font-size
+    var lines = (displayName + "\r" + details).split("\r");
+    var widest = 1;
+    for (var k = 0; k < lines.length; k++) {
+      var sz = (k === 0) ? nameSize : bodySize;   // first line is the big name
+      var w = lines[k].length * sz * R;
+      if (w > widest) widest = w;
+    }
+    var f = 1;
+    if (maxWidthPt)  f = Math.min(f, maxWidthPt / widest);
+    var blockH = nameSize * LH + (lines.length - 1) * bodySize * LH;
+    if (maxHeightPt) f = Math.min(f, maxHeightPt / blockH);
+    if (f < 8 / nameSize) f = 8 / nameSize;        // readability floor (~8pt name)
+    if (f < 1) { nameSize *= f; bodySize *= f; }
     t.textRange.characterAttributes.fillColor = C_TEXT;
-    t.textRange.characterAttributes.size = 30;
-    t.paragraphs[0].characterAttributes.size = 56;  // big panel name
+    t.textRange.characterAttributes.size = bodySize;
+    t.paragraphs[0].characterAttributes.size = nameSize;   // big panel name
   } catch (e) {}
   return t;
 }
@@ -227,6 +252,7 @@ else {
   var yTop = 0;
   var rowMaxH = 0;
   var built = 0;
+  var oversized = [];   // panels too large for a single Illustrator artboard at this scale
 
   for (var i = 0; i < PANELS.length; i++) {
     var p = PANELS[i];
@@ -245,6 +271,16 @@ else {
       var abWpt = wTrimPt + 2 * bleedPt;   // full bleed box
       var abHpt = hTrimPt + 2 * bleedPt;
 
+      // Skip panels too big for one Illustrator artboard (e.g. a 603" hanging
+      // sign — even at half-scale it's ~302", past the ~227" limit). Flag it to
+      // tile/seam separately instead of crashing the whole run.
+      if (abWpt > MAX_AB_PT || abHpt > MAX_AB_PT) {
+        oversized.push(displayName + "  (" + p.w + '" x ' + p.h + '" = ' +
+                       Math.round(abWpt / PT) + '" x ' + Math.round(abHpt / PT) +
+                       '" at ' + (SCALE * 100) + "% — past Illustrator's ~227\" artboard limit; tile/seam separately)");
+        continue;
+      }
+
       // wrap to next row if this artboard would overflow the canvas width
       if (xCursor > 0 && (xCursor + abWpt) > MAX_ROW_W_PT) {
         xCursor = 0;
@@ -256,12 +292,17 @@ else {
       var abTop  = yTop;
       var abRect = [abLeft, abTop, abLeft + abWpt, abTop - abHpt];
 
-      if (built === 0) {                      // reuse the document's first artboard
-        doc.artboards[0].artboardRect = abRect;
-        doc.artboards[0].name = displayName;
-      } else {
-        var ab = doc.artboards.add(abRect);
-        ab.name = displayName;
+      try {
+        if (built === 0) {                      // reuse the document's first artboard
+          doc.artboards[0].artboardRect = abRect;
+          doc.artboards[0].name = displayName;
+        } else {
+          var ab = doc.artboards.add(abRect);
+          ab.name = displayName;
+        }
+      } catch (eAdd) {
+        oversized.push(displayName + "  (artboard could not be created: " + eAdd + ")");
+        continue;
       }
 
       // Bleed box (= artboard edge)
@@ -287,8 +328,9 @@ else {
         drawDoor(lDoor, lLabel, p.door, p, trimLeftXpt, trimBottomYpt);
       }
 
-      // Label (just inside the top-left, below the bleed)
-      addLabel(lLabel, abLeft + bleedPt + sPt(2), abTop - bleedPt - sPt(2), p, displayName);
+      // Label (just inside the top-left, below the bleed) — scaled to fit the panel
+      addLabel(lLabel, abLeft + bleedPt + sPt(2), abTop - bleedPt - sPt(2), p, displayName,
+               wTrimPt - sPt(4), abHpt - sPt(2));
 
       xCursor += abWpt + gapPt;
       if (abHpt > rowMaxH) rowMaxH = abHpt;
@@ -301,6 +343,7 @@ else {
   alert("Done.\rJob: " + JOB_NAME +
         "\rSpec: " + (SPEC.__source || "built-in") +
         "\rArtboards created: " + built +
+        (oversized.length ? "\r\rSKIPPED (too large for one artboard — tile/seam separately):\r  - " + oversized.join("\r  - ") : "") +
         "\rScale: " + (SCALE * 100) + "%  |  Bleed: " + BLEED_PER_SIDE + '" per side (' + (BLEED_PER_SIDE * 2) + '" total)' +
         "\r\rColors:  cyan = bleed,  black = trim,  magenta = safe area," +
         "\r  orange = keep-clear (fixture/TV/shelf),  green = live art area,  red = door." +

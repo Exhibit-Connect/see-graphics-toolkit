@@ -13,6 +13,7 @@ Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 """
 import json, sys, os, subprocess, html, tempfile, shutil, time
 import proofer
+import branding
 
 RED = "#ED1C24"
 def find_default_spec():
@@ -149,8 +150,9 @@ def build_html(spec):
       .unv {{ color:{RED}; font-weight:700; font-size:9.5px; white-space:nowrap; }}
       .unvsize {{ color:{RED}; }}
       footer {{ margin-top:18px; color:#888; font-size:10px; border-top:1px solid #ddd; padding-top:6px; }}
+      {branding.BRAND_CSS}
     </style></head><body>
-      <div class="pill">Graphic Submission Spec Packet</div>
+      {branding.header_html("Graphic Submission Spec Packet")}
       <h1>{esc(job.get('name','') or job.get('client',''))}</h1>
       <div class="meta">{meta}</div>
       {banner}

@@ -30,6 +30,8 @@ This is the one hands‑on step, done by a designer in Adobe Illustrator:
 You'll get one ready‑to‑design template per wall (the colored guide lines are explained at the bottom).
 *Not a designer? Ask Claude to walk you through it.*
 
+> **One exception — very large pieces.** If a graphic is bigger than Illustrator can fit on a single canvas (roughly **37 feet — about 450 inches — on a side**, e.g. a full-circumference hanging sign), it's **flagged to "tile/seam separately"** instead of built as one template. That's the right call, not a gap: a piece that size is printed in sections and seamed together anyway, so there was never one single sheet to make. It still appears on the client spec sheet, still gets checked, and still shows on the proof — only that one oversized template is skipped. Every normal wall, counter, and panel is well under the limit and templates as usual.
+
 **Quick look without Illustrator:** ask Claude — *"show me what the wall templates will look like"* — and it generates a preview image of all the panels straight from the booth file.
 
 ### 3 · Tell the client what to send

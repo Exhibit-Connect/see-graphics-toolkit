@@ -31,6 +31,7 @@ see-graphics-toolkit/
 | Check artwork | `proofer.py` | Auto-checks a returned file: size, color, resolution, fonts, spelling. |
 | Proof & sign-off | `make_proof.py` | Branded proof — one item, or a whole-job multi-page document (cover/summary page + one page per graphic); dated, locked client approval; logs each one. |
 | (shared) | `ai_client.py` | OpenRouter client used by the AI steps. |
+| (shared) | `branding.py` | Shared SEE logo + contact header, so every generated document carries the same branding. |
 
 ## Quick start
 Run from this top folder. The tools auto-find the example booth in `examples/`.

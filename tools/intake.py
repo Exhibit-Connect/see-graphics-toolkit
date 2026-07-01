@@ -133,12 +133,21 @@ def parse_graphic_key(text):
     return [{"name": n, "w": found[n][0], "h": found[n][1]} for n in order]
 
 
+# Render DPIs. High enough that fine printed dimension labels (e.g. 39.0625") are
+# legible, not just shapes. Graphic-key text is often OUTLINED/vector — not
+# selectable and easy to lose at low DPI — so both passes render high. OCR is the
+# deterministic, primary size reader; the AI pass is the completeness backstop.
+AI_RENDER_DPI = 150
+OCR_RENDER_DPI = 300
+
+
 def render_pages(path, n_pages, max_pages=5):
-    """Rasterize the first pages to PNG for the AI pass (Ghostscript)."""
+    """Rasterize the first pages to PNG for the AI pass (Ghostscript), at
+    AI_RENDER_DPI so the model can read small dimension labels, not just shapes."""
     out = []
     for p in range(1, min(n_pages, max_pages) + 1):
         png = os.path.abspath(f"_intake_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r80",
+        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{AI_RENDER_DPI}",
                         f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
                        capture_output=True)
         if os.path.exists(png):
@@ -159,7 +168,7 @@ def ocr_pages(path, n_pages, max_pages=8):
     out = []
     for p in range(1, min(n_pages, max_pages) + 1):
         png = os.path.abspath(f"_intake_ocr_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r300",
+        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{OCR_RENDER_DPI}",
                         f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path], capture_output=True)
         if not os.path.exists(png):
             continue

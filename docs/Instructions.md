@@ -14,10 +14,10 @@ Your job is to **provide the files and check the results** — not to operate an
 ### 1 · A job is won → make the "booth file"
 The **booth file** is one small file that lists every wall and its size. Everything else is built from it.
 
-- **Give Claude:** the 3D team's placement drawings (the PDF that shows the walls and sizes).
+- **Give Claude:** the 3D team's placement drawings — **send every file they give you** (for example a "details" deck *and* a "renders" deck), not just one, so nothing gets missed.
 - **Say:** *"Make the booth file for [Client – Show – Size] from this handoff."*
 - **You get back:** a draft booth file **+ a short checklist** of things to confirm — finishes (fabric, vinyl…), which wall has the door, any TV/shelf spots, the due date.
-- **If the handoff is a *picture* (a slide deck with the sizes drawn on, not typed):** Claude reads the sizes right off the images and fills the draft for you — each one marked to **confirm**, and anything without a printed size is flagged to **measure** (never guessed).
+- **If the handoff is a *picture* (a slide deck with the sizes drawn on, not typed):** Claude reads the sizes right off the images at high resolution — catching even small labels — and fills the draft for you. Each one is marked to **confirm**, and anything it can't read clearly (or that has no printed size) is flagged to **measure**, never guessed.
 - **Your job:** answer the checklist (ask Marc or the 3D team if unsure) and tell Claude the answers. Done — that file now drives every step below.
 
 ### 2 · Make the wall templates (in Illustrator)

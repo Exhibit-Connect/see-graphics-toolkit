@@ -31,6 +31,9 @@ demo_scratch/
 # intake outputs (client-derived; written to cwd when run live, e.g. during a demo)
 booth_spec_*_DRAFT.json
 *_intake_review.md
+# a CONFIRMED booth file for a real job is client data — keep any at the repo root out
+# (root-anchored so the tracked examples/ booth file is unaffected)
+/booth_spec_*.json
 # template preview written to cwd (can carry client data, e.g. a Syntron preview)
 templates_preview.*
 # job dashboard written to cwd (lists real jobs — can carry client data)

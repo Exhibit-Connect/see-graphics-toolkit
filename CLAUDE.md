@@ -45,6 +45,15 @@ Tools are **location-independent**: they auto-find `examples/*booth_spec*.json` 
 file, intake checklist, template preview, client spec sheet, artwork check report, and the proofs. The tools
 default to it, so every step can be demonstrated end to end without any private data.
 
+## Real jobs vs. the example
+`examples/` is the **only** booth data in the repo — it's fake/public, and the tools default to it when
+given no path. **Real client jobs live in a gitignored `jobs/<job>/` folder** (that job's booth file + the
+3D handoff + the generated deliverables) and are **never committed**. Run a tool against the job's booth
+file — e.g. `python3 tools/generate_spec_packet.py jobs/<job>/booth_spec_<job>.json` — and point the
+dashboard at all of them with `python3 tools/dashboard.py --jobs-dir jobs`. Keeping each job in its own
+folder (rather than loose in the repo root) also stops the dashboard's auto-discovery from mixing drafts,
+confirmed files, and the example together.
+
 ## AI setup
 The AI steps use **OpenRouter** (model via the `OPENROUTER_MODEL` env var; defaults to an Anthropic Claude
 model). Provide your key in `OPENROUTER_API_KEY` **or** a local, gitignored `.openrouter_key` file. Without a
@@ -66,6 +75,7 @@ PDFs in `docs/`) are updated to match.
 ## Critical rules
 - **Never commit secrets or large binaries.** `.openrouter_key`, `*.zip`, and the tools' runtime outputs are
   gitignored. Always run `git status` before committing, and prefer targeted `git add <path>` over `git add -A`.
-- **Keep client artwork and internal files out of the repo.** The door templates' proprietary source and any
-  client/internal documents stay local; the `examples/` files demonstrate every tool, so nothing is lost.
+- **Keep client artwork and internal files out of the repo.** Real jobs live in the gitignored `jobs/<job>/`
+  folder; the door templates' proprietary source and any client/internal documents stay local; the
+  `examples/` files (fake/public) demonstrate every tool, so nothing is lost.
 - `.jsx` changes can only be verified inside Adobe Illustrator; the Python tools are covered by `pytest`.

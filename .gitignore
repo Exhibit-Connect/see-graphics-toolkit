@@ -34,6 +34,8 @@ booth_spec_*_DRAFT.json
 # a CONFIRMED booth file for a real job is client data — keep any at the repo root out
 # (root-anchored so the tracked examples/ booth file is unaffected)
 /booth_spec_*.json
+# live-job working folders (client data: booth files, source decks, deliverables)
+jobs/
 # template preview written to cwd (can carry client data, e.g. a Syntron preview)
 templates_preview.*
 # job dashboard written to cwd (lists real jobs — can carry client data)

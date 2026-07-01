@@ -14,6 +14,7 @@ Usage:
 Outputs BASE.svg (always) and BASE.png (via macOS qlmanage when available).
 """
 import json, sys, os, glob, math, subprocess, tempfile, shutil, html
+import render
 
 PXI = 2.3          # pixels per inch in the preview
 COLS = 5           # panels per row
@@ -97,6 +98,14 @@ def build_svg(spec):
         colx.append(colx[-1] + colw[j] + GAP)
     rowh = [max(bh(p) for p in r) for r in rows]
     total_w = max(colx[len(r)] for r in rows) if rows else 400
+    # Each panel's NAME + size is drawn left-aligned at its column x, and can be
+    # WIDER than a narrow panel's box (e.g. "Counter_Side_Left" over a 20" panel).
+    # Grow the canvas to fit the widest label so it can't clip off the right edge.
+    for r in rows:
+        for j, p in enumerate(r):
+            label_w = max(len(str(p.get("name", ""))) * 7.2,
+                          len(f'{p.get("w")}" × {p.get("h")}"') * 6.2)
+            total_w = max(total_w, colx[j] + label_w + PAD)
     total_h = HEADER + sum(rh + LBL + GAP for rh in rowh) + PAD
 
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w:.0f}" height="{total_h:.0f}" '
@@ -129,16 +138,22 @@ def build_svg(spec):
 
 
 def render_png(svg_path, png_path, width=1600):
-    if not shutil.which("qlmanage"):
-        return False
-    td = tempfile.mkdtemp()
-    subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path], capture_output=True)
-    produced = os.path.join(td, os.path.basename(svg_path) + ".png")
-    ok = os.path.exists(produced)
-    if ok:
-        shutil.move(produced, png_path)
-    shutil.rmtree(td, ignore_errors=True)
-    return ok
+    """Rasterize the preview SVG to PNG. Primary path is the shared headless-Chrome
+    renderer (render.svg_to_png), which sizes the canvas to the SVG's OWN aspect
+    ratio — qlmanage force-fit a square and cropped wide booths (a long back wall
+    lost panels off the right edge). Falls back to qlmanage only if Chrome is absent."""
+    if render.svg_to_png(svg_path, png_path):
+        return True
+    if shutil.which("qlmanage"):  # fallback (may crop very wide layouts)
+        td = tempfile.mkdtemp()
+        subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path], capture_output=True)
+        produced = os.path.join(td, os.path.basename(svg_path) + ".png")
+        ok = os.path.exists(produced)
+        if ok:
+            shutil.move(produced, png_path)
+        shutil.rmtree(td, ignore_errors=True)
+        return ok
+    return False
 
 
 def main():

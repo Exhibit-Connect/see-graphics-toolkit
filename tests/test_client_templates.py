@@ -48,6 +48,20 @@ def test_fit_px_keeps_bleed_box_within_the_draw_area():
     assert (panel["h"] + 2 * bleed) * px <= 470 + 0.01
 
 
+def test_build_svg_widens_for_long_panel_labels():
+    # a narrow panel with a long NAME draws wider than its box; the SVG canvas
+    # must grow so the label doesn't clip off the right edge (Uptool regression)
+    import re
+
+    def svg_width(name):
+        spec = {"settings": {"bleed_per_side_in": 1.0, "safe_margin_in": 4.0},
+                "panels": [{"name": name, "w": 20, "h": 37.5}]}
+        svg, _ = pt.build_svg(spec)
+        return float(re.search(r'width="(\d+(?:\.\d+)?)"', svg).group(1))
+
+    assert svg_width("Counter_Side_Left_Extra_Long") > svg_width("X")
+
+
 def test_caption_rows_carry_trim_and_bleed_sizes():
     rows = dict(ct.caption_rows({"name": "F1", "w": 78.12, "h": 134.26,
                                  "finish": "Fabric", "sided": "single"}, SETTINGS))

@@ -52,7 +52,8 @@ key, the AI steps write a dry-run request instead of failing. Check it: `python3
 
 ## Rendering / platform
 PDFs render via **headless Google Chrome** (a poll-then-terminate helper, so it can't hang); the template
-preview rasterizes via **qlmanage**; **Ghostscript** rasterizes PDFs for OCR. **Mac-centric.** The `.jsx`
+preview rasterizes via that same Chrome helper (`render.svg_to_png`, sized to the SVG's own aspect ratio so
+wide booths aren't cropped; falls back to **qlmanage** only if Chrome is absent); **Ghostscript** rasterizes PDFs for OCR. **Mac-centric.** The `.jsx`
 runs only inside Illustrator (a `CMYKColor is not defined` error anywhere else is expected).
 
 ## Tests + definition of done

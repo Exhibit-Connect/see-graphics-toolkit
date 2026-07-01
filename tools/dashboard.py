@@ -26,6 +26,7 @@ except Exception:
 
 LOG = "proof_log.xlsx"
 STAGE_COLORS = {"Intake": "#8a8a8a", "Awaiting confirm": "#F7941E",
+                "Awaiting client artwork": "#7B61FF",
                 "In proof": "#00AEEF", "Approved": "#2E9E40"}
 DUE_SOON_DAYS = 3
 

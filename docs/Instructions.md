@@ -37,6 +37,7 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 ### 3 · Tell the client what to send
 - **Say:** *"Make the client spec sheet from the booth file."*
 - **You get back:** a clean PDF — the sheet you email the client — listing every graphic's **size, material, finishing type, and quantity**, the build rules, the **job number**, and the due date.
+- **With a labeled rendering, if you have one:** if the booth file points to a booth **rendering** (the 3D view with each graphic labeled), the spec sheet shows it right at the top — so the client sees *which* graphic goes *where* before reading the sizes.
 - **Want to go further than a list?** Say: *"Make the client design templates."* You get **one PDF with a page per graphic**, each showing the exact artboard with the bleed, trim, safe and keep‑clear guides drawn on it, plus the true sizes — so the client designs **right on the guides** (no Illustrator needed). It heads off wrong‑size and missing‑bleed files at the source. *(A piece too big for one sheet is marked "tile/seam" — our team handles the seaming.)*
 
 ### 4 · Client sends artwork back → check it

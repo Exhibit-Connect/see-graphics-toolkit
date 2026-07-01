@@ -11,7 +11,7 @@ Usage:
 
 Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 """
-import json, sys, os, html
+import json, sys, os, html, base64
 import proofer
 import branding
 import render
@@ -30,6 +30,40 @@ def find_default_spec():
 
 def esc(v):
     return html.escape(str(v))
+
+
+def img_data_uri(path):
+    """A local image file as a data: URI (so the PDF is self-contained), or ''
+    if the path is missing/unreadable."""
+    if not path or not os.path.exists(path):
+        return ""
+    mime = "image/jpeg" if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg") else "image/png"
+    try:
+        return f"data:{mime};base64," + base64.b64encode(open(path, "rb").read()).decode()
+    except OSError:
+        return ""
+
+
+def rendering_data_uri(path):
+    """The booth rendering as a data: URI, TRIMMED of surrounding white so the art
+    fills the frame (a raw slide export is mostly whitespace and looks small/soft
+    embedded). Falls back to the raw image, or '' if there's nothing to embed."""
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        import io
+        from PIL import Image, ImageChops
+        im = Image.open(path).convert("RGB")
+        bbox = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).getbbox()
+        if bbox:
+            pad = 24
+            im = im.crop((max(0, bbox[0] - pad), max(0, bbox[1] - pad),
+                          min(im.width, bbox[2] + pad), min(im.height, bbox[3] + pad)))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return img_data_uri(path)
 
 
 def scale_label(s):
@@ -124,6 +158,13 @@ def build_html(spec):
             ("Due date", job.get("due_date", "")),
         ] if v)
 
+    render_block = ""
+    if spec.get("__rendering_uri"):
+        render_block = (f'<section class="placement"><h2>Graphic placement</h2>'
+                        f'<div class="render"><img src="{spec["__rendering_uri"]}" '
+                        f'alt="Booth rendering with each graphic labeled">'
+                        f'<div class="rcap">Booth rendering — each graphic is labeled; see the sizes on the next page.</div></div></section>')
+
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: letter landscape; margin: 0.5in; }}
       * {{ box-sizing: border-box; }}
@@ -150,12 +191,18 @@ def build_html(spec):
       .unv {{ color:{RED}; font-weight:700; font-size:9.5px; white-space:nowrap; }}
       .unvsize {{ color:{RED}; }}
       footer {{ margin-top:18px; color:#888; font-size:10px; border-top:1px solid #ddd; padding-top:6px; }}
+      .placement {{ page-break-after: always; }}
+      .render {{ margin:30px auto 8px; text-align:center; }}
+      .render img {{ display:block; margin:0 auto; max-width:82%; max-height:430px; border:1px solid #e2e2e2;
+                     border-radius:8px; padding:12px; background:#fff; box-shadow:0 1px 5px rgba(0,0,0,.09); }}
+      .rcap {{ color:#888; font-size:10px; margin-top:6px; text-align:center; }}
       {branding.BRAND_CSS}
     </style></head><body>
       {branding.header_html("Graphic Submission Spec Packet")}
       <h1>{esc(job.get('name','') or job.get('client',''))}</h1>
       <div class="meta">{meta}</div>
       {banner}
+      {render_block}
       <h2>Graphics to submit</h2>
       <table>
         <thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Material</th><th>Finishing type</th><th>Qty</th><th>Sided</th><th>Visible area / keep-clear</th><th>Notes</th></tr></thead>
@@ -172,6 +219,10 @@ def main():
     spec_path = sys.argv[1] if len(sys.argv) > 1 else find_default_spec()
     spec = json.load(open(spec_path))
     spec["__source"] = os.path.basename(spec_path)
+    rp = spec.get("rendering")
+    if rp and not os.path.isabs(rp):
+        rp = os.path.join(os.path.dirname(os.path.abspath(spec_path)), rp)
+    spec["__rendering_uri"] = rendering_data_uri(rp)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
     html_path = os.path.abspath(f"{base}_Spec_Packet.html")
     pdf_path = os.path.abspath(f"{base}_Spec_Packet.pdf")

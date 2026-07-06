@@ -228,7 +228,7 @@ def build_dashboard_html(rows, today=None):
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: letter landscape; margin: 0.5in; }}
       * {{ box-sizing: border-box; }}
-      body {{ font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; margin:0; }}
+      body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; margin:0; }}
       h1 {{ font-size:24px; margin:8px 0 2px; }}
       .meta {{ color:#444; font-size:12px; margin-bottom:10px; }}
       .meta b {{ color:{branding.RED}; }}

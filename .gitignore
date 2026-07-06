@@ -5,8 +5,10 @@
 # Client / SEE proprietary source - kept local, not distributed
 *.ai
 *Graphic_Dimensions*
-# logo: the tool uses assets/see_logo.png (committed); keep the source PDF local
-SE_Exhibits_Logo_Horizontal.pdf
+# official SEE brand sources (presentation INDD/PDF, artwork-guidelines PDF, vector logo PDF):
+# copyright-protected SEE property — the tools read them from here at runtime but they are
+# never committed. The committed assets/see_logo.png is the only distributed brand asset.
+assets/brand/
 SE_Graphics_Production_Department_Roles.docx
 
 # Redundant bundle (GitHub offers "Download ZIP") + runtime data

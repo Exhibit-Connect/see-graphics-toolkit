@@ -17,11 +17,11 @@ can never disagree. Define the booth once → everything downstream stays consis
 | `SEE_Wall_Template_Generator.jsx` | The production wall templates (Illustrator artboards with bleed/trim/safe guides, door cuts, keep-clear/live zones), from the booth file. **Runs only inside Adobe Illustrator** (File ▸ Scripts ▸ Other Script). | in Illustrator |
 | `preview_templates.py` | Quick PNG/SVG **preview** of all templates from the booth file — no Illustrator needed. Its per-panel guide drawing (`panel_guides_svg`) is shared with `client_templates.py`. | `python3 tools/preview_templates.py [booth.json]` |
 | `client_templates.py` | **Client-ready design templates** (PDF) from the booth file — one page per panel with bleed/trim/safe/keep-clear/live/door guides + exact sizes, openable without Illustrator so clients design on the real layout. Oversized pieces show a tile/seam notice. `--per-panel` also emits one PDF each. | `python3 tools/client_templates.py [booth.json] [--per-panel]` |
-| `generate_spec_packet.py` | Client submission spec sheet (PDF) from the booth file — per-panel size / material / finishing-type / qty / sided / visible area. Optionally embeds a **labeled booth rendering** at the top (booth-file `rendering` field → image path). Stamps an **UNVERIFIED-DIMENSIONS** banner on any unconfirmed panel. | `python3 tools/generate_spec_packet.py [booth.json]` |
+| `generate_spec_packet.py` | Client submission spec packet (PDF) from the booth file — a **fully branded 16″×9″ slide deck** mirroring SEE's official 2025 client presentation: cover (client + show + booth, on SEE's signature geometric background), Who We Are, project info, a **3D booth rendering** (`rendering_3d` field), a **labeled placement view** (`rendering` field), per-panel size / material / finishing-type / qty / sided / visible area, a **native Artwork Guidelines** page (build rules + accepted-format icons, laid out at 16×9 — not a pasted image), and a Thank You close. The official image pages (Who We Are / Thank You) embed from the local-only `assets/brand/` folder and drop out cleanly on a public checkout; cover/info/graphics/guidelines always render. Stamps an **UNVERIFIED-DIMENSIONS** banner on any unconfirmed panel. | `python3 tools/generate_spec_packet.py [booth.json]` |
 | `proofer.py` | Checks returned client artwork vs the booth file: size, color (flags RGB), resolution, fonts, printer marks, spelling. Adds a plain-English **"what to change" fix list** + a marked-up preview, but **never alters the client's file**. | `python3 tools/proofer.py artwork.pdf [--panel NAME]` |
 | `make_proof.py` | The client proof: a single item, or a **whole-job document** (cover/summary + one page per graphic). Structured spec block, status legend, disclaimer banner, the fix list, 3-way sign-off, prepped/QC footer; dated, **locked** sign-off + a log. Refuses to approve a FAIL, a placeholder/blank, or an **unverified** panel. | item: `make_proof.py art.pdf [...] [--approve "Name"]` · job: `make_proof.py a1 a2 …` |
 | `dashboard.py` | **Job status dashboard** (HTML, `--pdf` for PDF): every active job + its stage (intake / awaiting confirm / in proof / approved), due date + countdown, and risk flags (unverified panels, failed checks, approaching deadline). Built from the booth files + `proof_log.xlsx`; degrades gracefully without them. | `python3 tools/dashboard.py [--jobs-dir DIR] [--pdf]` |
-| `branding.py` | Shared SEE logo + contact header, so every generated document (spec sheet, check report, proof, dashboard, client templates) matches. | (imported by the others) |
+| `branding.py` | Shared SEE branding: official logo (high-res, from the vector brand source), official brand red **#E31D3D**, Helvetica Neue font stack, contact header, and the official Artwork-Guidelines page helper — so every generated document (spec sheet, check report, proof, dashboard, client templates) matches. | (imported by the others) |
 | `render.py` | Shared HTML→PDF helper (poll-then-terminate headless Chrome) used by every PDF-producing tool. | (imported by the others) |
 | `ai_client.py` | Shared OpenRouter client used by the AI steps. | `python3 tools/ai_client.py --check` |
 
@@ -66,7 +66,7 @@ wide booths aren't cropped; falls back to **qlmanage** only if Chrome is absent)
 runs only inside Illustrator (a `CMYKColor is not defined` error anywhere else is expected).
 
 ## Tests + definition of done
-Run `pip install -r requirements-dev.txt && pytest` (66 tests; covers the pure helpers in `intake.py` /
+Run `pip install -r requirements-dev.txt && pytest` (87 tests; covers the pure helpers in `intake.py` /
 `proofer.py` / `make_proof.py` / `branding.py` / `dashboard.py` / `client_templates.py` / `render.py`).
 **Extend the suite whenever you add or change logic** in a tool. A behavior
 change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the two overview
@@ -76,6 +76,6 @@ PDFs in `docs/`) are updated to match.
 - **Never commit secrets or large binaries.** `.openrouter_key`, `*.zip`, and the tools' runtime outputs are
   gitignored. Always run `git status` before committing, and prefer targeted `git add <path>` over `git add -A`.
 - **Keep client artwork and internal files out of the repo.** Real jobs live in the gitignored `jobs/<job>/`
-  folder; the door templates' proprietary source and any client/internal documents stay local; the
+  folder; the door templates' proprietary source, the official SEE brand sources (`assets/brand/` — presentation INDD/PDF, artwork-guidelines PDF, vector logo; only the derived `assets/see_logo.png` is committed), and any client/internal documents stay local; the
   `examples/` files (fake/public) demonstrate every tool, so nothing is lost.
 - `.jsx` changes can only be verified inside Adobe Illustrator; the Python tools are covered by `pytest`.

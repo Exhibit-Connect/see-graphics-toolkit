@@ -118,7 +118,7 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
         frag = pt.panel_guides_svg(panel, st, door, 5, 5, px)
         art = (f'<svg class="tpl" width="{pbw + 10:.0f}" height="{pbh + 10:.0f}" '
                f'viewBox="0 0 {pbw + 10:.0f} {pbh + 10:.0f}" xmlns="http://www.w3.org/2000/svg" '
-               f'font-family="Arial, Helvetica, sans-serif">'
+               f'font-family="Helvetica Neue, Helvetica, Arial, sans-serif">'
                f'<rect x="0" y="0" width="{pbw + 10:.0f}" height="{pbh + 10:.0f}" fill="#fff"/>{frag}</svg>'
                f'<div class="shown">Shown reduced to fit the page — build at the TRUE sizes listed at right.</div>')
     note = panel.get("note")
@@ -169,7 +169,7 @@ def _cover_page(spec, panels, over_names, pages):
 CSS = f"""
   @page {{ size: letter landscape; margin: 0.5in; }}
   * {{ box-sizing: border-box; }}
-  body {{ font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; margin:0; font-size:12px; }}
+  body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; margin:0; font-size:12px; }}
   .page {{ page-break-after: always; }}
   .page:last-child {{ page-break-after: auto; }}
   .phead {{ display:flex; justify-content:space-between; align-items:center; }}

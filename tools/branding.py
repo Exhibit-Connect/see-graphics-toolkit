@@ -9,7 +9,12 @@ that uses this module updates at once.
 """
 import os, glob, base64, functools
 
-RED = "#ED1C24"
+# Official SEE brand red, sampled from the 2025 brand sources (SE_2025_Client_Presentation /
+# SE_Artwork_Guidelines — the red title pills and headings all render as rgb(227,29,61)).
+RED = "#E31D3D"
+# Official deck typeface is Helvetica Neue (per the embedded fonts in the 2025 brand PDFs);
+# fall back cleanly where it isn't installed.
+FONT_STACK = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas | Atlanta | NJ/NY | Dallas "
            "&nbsp;·&nbsp; SouthEastExhibit.com")
 
@@ -41,6 +46,31 @@ BRAND_CSS = f"""
   .see-pill {{ background:{RED}; color:#fff; padding:6px 18px; border-radius:18px; font-weight:700; font-size:14px; white-space:nowrap; }}
   .see-contact {{ color:#777; font-size:10.5px; margin:0 0 12px; }}
 """
+
+
+@functools.lru_cache(maxsize=None)
+def brand_page_data_uri(name):
+    """A pre-rendered official SEE brand page (PNG in the local-only assets/brand/
+    folder) as a data: URI, or '' when that folder isn't present (e.g. a public-repo
+    checkout — the caller then simply omits the page). These pages are rendered from
+    SEE's copyright-protected brand sources (the 2025 client-presentation deck and the
+    Artwork-Guidelines PDF) and are gitignored, never distributed. `name` is the file
+    stem, e.g. 'who_we_are', 'thank_you', 'artwork_guidelines'."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.path.join(here, "..", "assets", "brand"),
+              os.path.join(os.getcwd(), "assets", "brand")):
+        p = os.path.join(d, f"{name}.png")
+        try:
+            return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode()
+        except OSError:
+            continue
+    return ""
+
+
+def artwork_guidelines_data_uri():
+    """SEE's official Artwork Guidelines one-pager as a data: URI (or '' if the brand
+    assets aren't present). Thin wrapper over brand_page_data_uri for callers/tests."""
+    return brand_page_data_uri("artwork_guidelines")
 
 
 def header_html(pill_text):

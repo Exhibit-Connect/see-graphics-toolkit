@@ -109,7 +109,7 @@ def build_svg(spec):
     total_h = HEADER + sum(rh + LBL + GAP for rh in rowh) + PAD
 
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{total_w:.0f}" height="{total_h:.0f}" '
-         f'viewBox="0 0 {total_w:.0f} {total_h:.0f}" font-family="Arial, Helvetica, sans-serif">']
+         f'viewBox="0 0 {total_w:.0f} {total_h:.0f}" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">']
     o.append(f'<rect x="0" y="0" width="{total_w:.0f}" height="{total_h:.0f}" fill="#ffffff"/>')
     o.append(f'<text x="{PAD}" y="34" font-size="22" font-weight="700" fill="#111">'
              f'Wall template preview — {esc(job)}</text>')

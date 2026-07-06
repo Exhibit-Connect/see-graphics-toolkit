@@ -25,7 +25,7 @@ import json, sys, os, re, math, subprocess, html, base64
 import branding
 import render
 
-RED = "#ED1C24"
+RED = branding.RED
 DICT = "/usr/share/dict/words"
 TOL = 0.08  # inch tolerance on size checks
 RASTER_EXT = (".tif", ".tiff", ".jpg", ".jpeg", ".png", ".psd", ".bmp", ".gif")
@@ -548,7 +548,7 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
                  if preview_b64 else "")
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: letter portrait; margin: 0.6in; }}
-      body {{ font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; font-size:12px; }}
+      body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; font-size:12px; }}
       .pill {{ background:{RED}; color:#fff; display:inline-block; padding:6px 16px; border-radius:16px; font-weight:700; }}
       h1 {{ font-size:20px; margin:10px 0 0; }}
       .meta {{ color:#555; font-size:11.5px; margin:2px 0 12px; }}

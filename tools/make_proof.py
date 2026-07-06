@@ -34,7 +34,7 @@ try:
 except Exception:
     openpyxl = None
 
-RED = "#ED1C24"
+RED = proofer.branding.RED
 LOG = "proof_log.xlsx"
 VCOL = {"PASS": "#2E9E40", "REVIEW": "#F7941E", "FAIL": RED}
 VLABEL = {"PASS": "PASS", "REVIEW": "NEEDS REVIEW", "FAIL": "FAIL"}
@@ -193,10 +193,10 @@ def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, 
 
 CSS_PROOF = """
   @page { size: letter portrait; margin: 0.5in; }
-  body { font-family: Arial, Helvetica, sans-serif; color:#1a1a1a; font-size:12px; margin:0; }
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; font-size:12px; margin:0; }
   .page { page-break-after: always; }
   .page:last-child { page-break-after: auto; }
-  .pill { background:#ED1C24; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }
+  .pill { background:#E31D3D; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }
   h1 { font-size:19px; margin:9px 0 1px; }
   .meta { color:#555; font-size:11px; margin:1px 0 0; }
   .verdict { display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }
@@ -204,7 +204,7 @@ CSS_PROOF = """
   .legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }
   .banner { margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
             border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }
-  .caution { margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid #ED1C24; border-left:6px solid #ED1C24;
+  .caution { margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid #E31D3D; border-left:6px solid #E31D3D;
              border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }
   .cols { display:flex; gap:15px; margin-top:6px; }
   .art { flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }
@@ -225,7 +225,7 @@ CSS_PROOF = """
   ol.fixlist { margin:7px 0 0; padding-left:18px; }
   ol.fixlist li { font-size:10px; margin:3px 0; color:#7a4a00; }
   .signbox { margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }
-  .sign .st { font-weight:700; color:#ED1C24; margin-bottom:7px; }
+  .sign .st { font-weight:700; color:#E31D3D; margin-bottom:7px; }
   .sign .opt { margin-bottom:5px; font-size:12px; }
   .sign .lines { margin:11px 0 9px; }
   .sign .chg { color:#555; }
@@ -238,7 +238,7 @@ CSS_PROOF = """
   .contact { color:#999; font-size:9px; margin-top:7px; }
   /* cover */
   .brandrow { display:flex; justify-content:space-between; align-items:center; }
-  .wordmark { font-size:18px; font-weight:800; color:#ED1C24; letter-spacing:.01em; }
+  .wordmark { font-size:18px; font-weight:800; color:#E31D3D; letter-spacing:.01em; }
   .logo { height:56px; width:auto; display:block; margin-bottom:4px; }
   .logosm { height:30px; width:auto; }
   .phead { display:flex; justify-content:space-between; align-items:center; }
@@ -248,13 +248,13 @@ CSS_PROOF = """
   .jobgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
   .jobgrid div b { font-size:12.5px; }
   .totals { margin:14px 0 6px; font-size:13px; }
-  .totals b { color:#ED1C24; }
-  table.summary th { background:#ED1C24; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }
+  .totals b { color:#E31D3D; }
+  table.summary th { background:#E31D3D; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }
   table.summary td { padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }
   table.summary tr:nth-child(even) td { background:#fafafa; }
   table.summary .muted { color:#c0392b; font-weight:700; }
   .howto { margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }
-  .howto b { color:#ED1C24; }
+  .howto b { color:#E31D3D; }
 """
 
 HEAD = '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF + '</style></head><body>'
@@ -336,7 +336,7 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
         <span class="legend">
           <span class="dot" style="background:#2E9E40"></span>Pass
           <span class="dot" style="background:#F7941E"></span>Needs review
-          <span class="dot" style="background:#ED1C24"></span>Fail</span>
+          <span class="dot" style="background:#E31D3D"></span>Fail</span>
       </div>
       <div class="banner">{DISCLAIMER}</div>
       {caution}

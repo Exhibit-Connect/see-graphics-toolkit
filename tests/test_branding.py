@@ -30,3 +30,18 @@ def test_header_embeds_logo_when_available():
         assert "<img" in branding.header_html("X")
     else:
         assert "see-wordmark" in branding.header_html("X")
+
+
+def test_brand_red_is_official_2025_value():
+    # sampled from the official 2025 brand sources (presentation + artwork guidelines)
+    assert branding.RED == "#E31D3D"
+
+
+def test_font_stack_leads_with_helvetica_neue():
+    assert branding.FONT_STACK.startswith("'Helvetica Neue'")
+
+
+def test_artwork_guidelines_uri_is_png_or_empty():
+    # assets/brand/ is local-only (gitignored); helper must degrade to '' without it
+    uri = branding.artwork_guidelines_data_uri()
+    assert uri == "" or uri.startswith("data:image/png;base64,")

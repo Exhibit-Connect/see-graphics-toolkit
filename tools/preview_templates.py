@@ -74,6 +74,26 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
                 cy = tby - hole.get("y_from_floor_in", 38) * px
                 o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.6"/>')
         o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
+    # Multiple marked doors on one long graphic (e.g. the conference-room run): each
+    # is {x, w, label[, side]} in trim inches from the left, full trim height. `side`
+    # (optional) adds the handle/lock holes on that latch edge; without it we just
+    # mark the opening (per production: "leave it one graphic, mark where the doors are").
+    for dm in panel.get("door_marks", []):
+        dmw = dm.get("w", (door_standard or {}).get("panel_w_in", 39.125)) * px
+        dmx = tlx + dm.get("x", 0) * px
+        o.append(f'<rect x="{dmx:.1f}" y="{tty:.1f}" width="{dmw:.1f}" height="{th:.1f}" '
+                 f'fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
+        o.append(f'<text x="{dmx+3:.1f}" y="{tty+12:.1f}" font-size="8.5" font-weight="700" '
+                 f'fill="{C["door"]}">{esc(dm.get("label", "DOOR"))}</text>')
+        dside = dm.get("side")
+        if dside in ("left", "right") and door_standard:
+            off = door_standard.get("edge_offset_in", 4.3125) * px
+            cx = (dmx + off) if dside == "left" else (dmx + dmw - off)
+            for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
+                if hole:
+                    cy = tby - hole.get("y_from_floor_in", 38) * px
+                    o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" '
+                             f'fill="none" stroke="{C["door"]}" stroke-width="1.4"/>')
     return "\n".join(o)
 
 

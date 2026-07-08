@@ -52,6 +52,14 @@ def oversized_panels(spec):
     return out
 
 
+def is_continuous(panel):
+    """A panel flagged to print as ONE continuous graphic even though it exceeds a
+    single Illustrator artboard — the vendor runs it in one piece (large-format),
+    so we draw the template (marking any doors) instead of a tile/seam notice.
+    Set `"oversize_mode": "continuous"` on the panel. Pure."""
+    return str(panel.get("oversize_mode", "")).strip().lower() == "continuous"
+
+
 def fit_px(panel, settings, max_w=860, max_h=470):
     """Pixels-per-inch so the panel's bleed box fits the page draw area. Pure."""
     bleed = settings.get("bleed_per_side_in", 1.0)
@@ -60,17 +68,32 @@ def fit_px(panel, settings, max_w=860, max_h=470):
     return max(0.5, min(max_w / bw, max_h / bh))
 
 
+def scale_pct(scale):
+    """SEE build scale as a percent phrase, e.g. 0.5 -> 'built at ½ scale (print @200%)'."""
+    if not scale or scale == 1:
+        return "full scale"
+    frac = {0.5: "½", 0.25: "¼", 0.75: "¾"}.get(scale, f"{scale:g}×")
+    return f"built at {frac} scale (print @{round(100/scale)}%)"
+
+
 def caption_rows(panel, settings):
-    """The client-facing build numbers for one panel (trim, file-with-bleed,
-    bleed, safe, material, finishing, sides, qty). Pure."""
+    """The client-facing build numbers for one panel (trim, file-with-bleed, the
+    ½-scale build size, bleed, safe, material, finishing, sides, qty). Pure."""
     bleed = settings.get("bleed_per_side_in", 1.0)
     safe = settings.get("safe_margin_in", 4.0)
+    scale = settings.get("scale", 0.5)
     w, h = panel.get("w"), panel.get("h")
     sided = str(panel.get("sided", "")).strip().lower()
     sided_lbl = {"single": "Single-sided", "double": "Double-sided"}.get(sided, panel.get("sided") or "—")
-    return [
+    rows = [
         ("Finished (trim) size", f'{w:g}" W × {h:g}" H' if (w and h) else "—"),
         ("File size WITH bleed", f'{w + 2*bleed:g}" W × {h + 2*bleed:g}" H' if (w and h) else "—"),
+    ]
+    if scale and scale != 1 and w and h:
+        # SEE builds at ½ scale then prints at 200% — show the exact build size.
+        rows.append((f"Build size ({scale_pct(scale)})",
+                     f'{w*scale:g}" × {h*scale:g}" trim · {(w+2*bleed)*scale:g}" × {(h+2*bleed)*scale:g}" with bleed'))
+    rows += [
         ("Bleed", f'{bleed:g}" on every side'),
         ("Safe margin", f'keep text & logos {safe:g}" in from the trim'),
         ("Material", panel.get("finish") or "—"),
@@ -78,6 +101,7 @@ def caption_rows(panel, settings):
         ("Sides", sided_lbl),
         ("Quantity", str(panel.get("quantity", 1))),
     ]
+    return rows
 
 
 # ---------- HTML ----------
@@ -106,7 +130,8 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
     name = panel.get("name", "?")
     cap = "".join(f'<tr><td class="cl">{html.escape(l)}</td><td class="cv">{html.escape(str(v))}</td></tr>'
                   for l, v in caption_rows(panel, st))
-    if oversized:
+    continuous = is_continuous(panel)
+    if oversized and not continuous:
         art = (f'<div class="oversize">&#9888; This piece is too large for one template '
                f'({panel.get("w")}" × {panel.get("h")}"). It is printed in sections and seamed together — '
                f'our team will handle the tiling. Build to the finished size + bleed listed, full resolution.</div>')
@@ -116,7 +141,13 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
         pbw = (panel.get("w", 1) + 2 * bleed) * px
         pbh = (panel.get("h", 1) + 2 * bleed) * px
         frag = pt.panel_guides_svg(panel, st, door, 5, 5, px)
-        art = (f'<svg class="tpl" width="{pbw + 10:.0f}" height="{pbh + 10:.0f}" '
+        cont_note = ""
+        if continuous:
+            doors = (" Door openings are marked; keep artwork clear of them."
+                     if panel.get("door_marks") else "")
+            cont_note = ('<div class="cont">&#9888; One continuous graphic — printed in a single '
+                         f'piece (no seams).{doors}</div>')
+        art = (f'{cont_note}<svg class="tpl" width="{pbw + 10:.0f}" height="{pbh + 10:.0f}" '
                f'viewBox="0 0 {pbw + 10:.0f} {pbh + 10:.0f}" xmlns="http://www.w3.org/2000/svg" '
                f'font-family="Helvetica Neue, Helvetica, Arial, sans-serif">'
                f'<rect x="0" y="0" width="{pbw + 10:.0f}" height="{pbh + 10:.0f}" fill="#fff"/>{frag}</svg>'
@@ -150,7 +181,14 @@ def _cover_page(spec, panels, over_names, pages):
     for i, p in enumerate(panels, 1):
         w, h = p.get("w"), p.get("h")
         size = f'{w:g}" × {h:g}"' if (w and h) else "—"
-        tag = ' <span class="ov">tile/seam</span>' if p.get("name") in over_names else ""
+        # "one piece" follows the continuous flag (not the artboard check), so every
+        # wall printed in one continuous run is marked — not only the artboard-oversized one.
+        if is_continuous(p):
+            tag = ' <span class="ov">one piece</span>'
+        elif p.get("name") in over_names:
+            tag = ' <span class="ov">tile/seam</span>'
+        else:
+            tag = ""
         lis += (f'<tr><td>{i}</td><td><b>{html.escape(str(p.get("name", "?")))}</b>{tag}</td>'
                 f'<td>{html.escape(size)}</td><td>{html.escape(p.get("finish") or "—")}</td></tr>')
     return f"""<section class="page">
@@ -181,6 +219,7 @@ CSS = f"""
   svg.tpl {{ max-width:100%; height:auto; }}
   .shown {{ color:#999; font-size:9.5px; margin-top:5px; }}
   .oversize {{ color:#7a0d12; background:#fde8e8; border:1px solid {branding.RED}; border-radius:6px; padding:18px 16px; font-weight:600; max-width:430px; line-height:1.45; }}
+  .cont {{ color:#7a0d12; background:#fff4f4; border:1px solid {branding.RED}; border-radius:6px; padding:7px 10px; font-weight:600; font-size:10.5px; line-height:1.4; margin-bottom:6px; }}
   .side {{ flex:1; }}
   table.cap {{ width:100%; border-collapse:collapse; margin-bottom:10px; }}
   table.cap td {{ padding:5px 8px; border-bottom:1px solid #eee; font-size:11.5px; vertical-align:top; }}
@@ -242,7 +281,12 @@ def main():
     open(hp, "w").write(build_templates_html(spec))
     msg = f"panels: {len(panels)}"
     if over:
-        msg += f"  ·  oversized (tile/seam): {', '.join(str(p.get('name')) for p in over)}"
+        seam = [str(p.get("name")) for p in over if not is_continuous(p)]
+        cont = [str(p.get("name")) for p in over if is_continuous(p)]
+        if seam:
+            msg += f"  ·  oversized (tile/seam): {', '.join(seam)}"
+        if cont:
+            msg += f"  ·  oversized (one piece, doors marked): {', '.join(cont)}"
     print(msg)
     print("HTML:", hp)
     if render.html_to_pdf(hp, pp):

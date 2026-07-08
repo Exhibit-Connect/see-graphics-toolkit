@@ -42,6 +42,23 @@ def test_spec_packet_omits_rendering_slide_when_absent():
     assert "Graphic Placement" not in gsp.build_html(dict(BASE))
 
 
+def test_multiple_placement_images_each_get_their_own_page():
+    html = gsp.build_html(dict(BASE, __rendering_items=[
+        {"uri": "data:image/png;base64,PLACE1", "caption": "Conference rooms F-L"},
+        {"uri": "data:image/png;base64,PLACE2", "caption": "Display walls A-G"},
+    ]))
+    assert "data:image/png;base64,PLACE1" in html and "data:image/png;base64,PLACE2" in html
+    assert "Graphic Placement" in html and "Graphic Placement (cont.)" in html
+    assert "Conference rooms F-L" in html and "Display walls A-G" in html  # per-image captions
+    assert html.count('class="slide slide-place"') >= 2
+
+
+def test_placement_uses_default_caption_when_none_given():
+    html = gsp.build_html(dict(BASE, __rendering_items=[
+        {"uri": "data:image/png;base64,PLACE1", "caption": None}]))
+    assert "Graphics-to-Submit sizes on the following pages" in html
+
+
 def test_3d_render_slide_present_only_when_set():
     html = gsp.build_html(dict(BASE, __rendering_3d_uri="data:image/png;base64,REND3D"))
     assert "Booth Rendering" in html and "data:image/png;base64,REND3D" in html
@@ -90,6 +107,59 @@ def test_rendering_data_uri_trims_surrounding_white(tmp_path):
     assert uri.startswith("data:image/png;base64,")
     out = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1])))
     assert out.width < 400 and out.height < 300                 # white margins trimmed away
+
+
+def test_plan_graphics_pages_places_every_row_once_in_order():
+    costs = [60] * 40                                   # 40 rows, more than one slide holds
+    pages = gsp.plan_graphics_pages(costs)
+    placed = [i for pg in pages for i in pg["rows"]]
+    assert placed == list(range(40))                    # every row once, order preserved
+    assert len(pages) > 1                               # actually paginated
+
+
+def test_plan_graphics_pages_respects_capacity():
+    costs = [60] * 40
+    pages = gsp.plan_graphics_pages(costs, cap=650, thead=44)
+    for pg in pages:
+        if len(pg["rows"]) > 1:                         # a lone row may exceed cap (never dropped)
+            assert pg["used"] <= 650
+
+
+def test_plan_graphics_pages_banner_on_first_page_only():
+    pages = gsp.plan_graphics_pages([60] * 12, banner_est=300)
+    assert pages[0]["banner"] is True
+    assert all(not pg["banner"] for pg in pages[1:])
+
+
+def test_plan_graphics_pages_excluded_gets_placed():
+    pages = gsp.plan_graphics_pages([60] * 12, excl_est=200)
+    assert sum(1 for pg in pages if pg["excl"]) == 1    # exclusions land on exactly one page
+
+
+def test_plan_graphics_pages_oversized_lone_row_not_dropped():
+    # a single row taller than the whole slide must still be placed (never silently lost)
+    pages = gsp.plan_graphics_pages([9999, 60, 60], cap=650)
+    placed = [i for pg in pages for i in pg["rows"]]
+    assert placed == [0, 1, 2]
+
+
+def test_all_panels_appear_across_paginated_slides():
+    many = dict(BASE)
+    many["panels"] = [{"name": f"Panel-{i:02d}", "w": 100, "h": 50, "finish": "fabric",
+                       "sided": "single", "needs_confirm": True,
+                       "note": "A fairly long note " * 8} for i in range(25)]
+    many["pending_inputs"] = ["confirm everything"] * 6
+    html = gsp.build_html(many)
+    for i in range(25):
+        assert f"Panel-{i:02d}" in html                 # no panel is clipped/dropped
+    assert html.count('class="slide slide-doc"') >= 2   # table spread over multiple slides
+    assert "Graphics to Submit (cont.)" in html         # continuation header present
+
+
+def test_small_job_stays_single_graphics_slide():
+    html = gsp.build_html(dict(BASE))                   # 1 panel
+    assert html.count('class="slide slide-doc"') == 1
+    assert "Graphics to Submit (cont.)" not in html
 
 
 def test_official_brand_pages_present_or_cleanly_absent():

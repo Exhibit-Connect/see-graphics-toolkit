@@ -11,12 +11,71 @@ Usage:
 
 Free / zero-install: pure-Python HTML, rendered to PDF via headless Chrome.
 """
-import json, sys, os, html, base64
+import json, sys, os, html, base64, math
 import proofer
 import branding
 import render
 
 RED = branding.RED
+
+# ---- Graphics-to-Submit pagination ------------------------------------------
+# Each deck page is a fixed 16in x 9in slide with overflow:hidden, so the panel
+# table must be split across as many slides as it needs — otherwise rows past
+# the first ~9in are silently clipped (a real bug on booths with many panels).
+# These are px budgets at Chrome's 96 px/in inside one .slide-doc body.
+GFX_BODY_PX   = 696   # px from the doc-body top (1.75in) to the slide bottom (9in)
+GFX_RESERVE_PX = 46   # bottom margin + the disclaimer line's breathing room
+GFX_THEAD_PX  = 44    # the repeated table header row on any slide that has rows
+GFX_CAP_PX    = GFX_BODY_PX - GFX_RESERVE_PX   # ~650 px of usable row budget per slide
+
+
+def est_lines(text, chars_per_line):
+    """Rough count of wrapped lines for a string in a fixed-width column."""
+    n = len(text or "")
+    if n == 0:
+        return 1
+    return max(1, math.ceil(n / chars_per_line))
+
+
+def row_est_px(note_text, unverified):
+    """Estimated rendered height (px) of one panel row; the Notes cell dominates,
+    and the size cell wraps to a 2nd line when it carries the 'unverified' badge."""
+    lines = max(est_lines(note_text, 82), 2 if unverified else 1)
+    return 18 + lines * 19   # cell padding + wrapped lines
+
+
+def plan_graphics_pages(row_costs, banner_est=0, excl_est=0,
+                        cap=GFX_CAP_PX, thead=GFX_THEAD_PX):
+    """Pure planner: pack panel rows onto as many slides as needed.
+
+    Returns a list of page dicts: {"banner": bool, "rows": [row_index,...],
+    "excl": bool}. The banner (unverified + draft notes) rides on page 1; the
+    excluded list rides on the last page with rows, or its own page if it won't
+    fit. Every row index appears on exactly one page, order preserved, and no
+    page exceeds `cap` unless a single item is itself larger than `cap` (a lone
+    oversized row still gets its own page so nothing is ever dropped)."""
+    pages = []
+    cur = {"banner": banner_est > 0, "rows": [], "used": banner_est if banner_est > 0 else 0}
+    for idx, cost in enumerate(row_costs):
+        add = cost + (thead if not cur["rows"] else 0)
+        if cur["rows"] and cur["used"] + add > cap:
+            pages.append(cur)
+            cur = {"banner": False, "rows": [], "used": 0}
+            add = cost + thead
+        cur["rows"].append(idx)
+        cur["used"] += add
+    pages.append(cur)
+
+    if excl_est > 0:
+        last = pages[-1]
+        if last["rows"] and last["used"] + excl_est > cap:
+            pages.append({"banner": False, "rows": [], "used": excl_est, "excl": True})
+        else:
+            last["used"] += excl_est
+            last["excl"] = True
+    for pg in pages:
+        pg.setdefault("excl", False)
+    return pages
 
 
 def cover_bg_svg(w=1600, h=900):
@@ -124,7 +183,7 @@ def build_html(spec):
     footer_note = ("Sizes marked ⚠ are UNVERIFIED until a person confirms them against the source."
                    if unverified else "For position only; sizes are final unless flagged.")
 
-    rows = ""
+    row_htmls, row_costs = [], []
     for p in panels:
         finish = p.get("finish", "—")
         fin_cls = ' class="muted"' if "TBD" in str(finish) else ""
@@ -136,8 +195,9 @@ def build_html(spec):
         ftype = p.get("finishing_type") or "—"
         ftype_cls = ' class="muted"' if (ftype == "—" or "TBD" in str(ftype)) else ""
         qty = p.get("quantity", 1)
-        note = esc(p.get("note", "")) or '<span class="muted">—</span>'
-        rows += f"""<tr>
+        note_txt = p.get("note", "")
+        note = esc(note_txt) or '<span class="muted">—</span>'
+        row_htmls.append(f"""<tr>
           <td class="pname">{esc(p['name'])}</td>
           <td class="size{' unvsize' if unv else ''}">{p['w']}″ × {p['h']}″{unv_badge}</td>
           <td{fin_cls}>{esc(finish)}{interior}</td>
@@ -146,7 +206,8 @@ def build_html(spec):
           <td>{sided_disp}</td>
           <td class="vis">{visible_cell(p)}</td>
           <td class="note">{note}</td>
-        </tr>"""
+        </tr>""")
+        row_costs.append(row_est_px(note_txt, unv))
 
     excl = ""
     if excluded:
@@ -244,32 +305,65 @@ def build_html(spec):
         </div>
       </section>"""
 
+    # Graphic-placement view(s). `rendering` may be one image or a list, so a booth
+    # with several placement drawings (e.g. one per wall group) gets one page each —
+    # every labeled placement appears rather than being squeezed into a single image.
+    place_items = spec.get("__rendering_items")
+    if not place_items and spec.get("__rendering_uri"):
+        place_items = [{"uri": spec["__rendering_uri"], "caption": None}]
+    default_cap = "Each graphic is labeled to match the Graphics-to-Submit sizes on the following pages."
     render_slide = ""
-    if spec.get("__rendering_uri"):
-        render_slide = f"""
+    for i, it in enumerate(place_items or []):
+        head = "Graphic Placement" if i == 0 else "Graphic Placement (cont.)"
+        cap = esc(it.get("caption")) if it.get("caption") else default_cap
+        render_slide += f"""
       <section class="slide slide-place">
         {logo_tag}
-        <div class="pill-head">Graphic Placement</div>
+        <div class="pill-head">{head}</div>
         <div class="place-wrap">
-          <img class="place-img" src="{spec['__rendering_uri']}" alt="Booth rendering with each graphic labeled">
-          <div class="place-cap">Each graphic is labeled — the exact finished sizes are on the next page.</div>
+          <img class="place-img" src="{it['uri']}" alt="Booth drawing with each graphic labeled">
+          <div class="place-cap">{cap}</div>
         </div>
       </section>"""
 
-    graphics_slide = f"""
+    # The table is paginated across as many 16x9 slides as it needs so no panel is
+    # ever clipped by the fixed-height slide (see plan_graphics_pages).
+    thead_html = ("<thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Material</th>"
+                  "<th>Finishing type</th><th>Qty</th><th>Sided</th>"
+                  "<th>Visible area / keep-clear</th><th>Notes</th></tr></thead>")
+    disclaimer = (f'<div class="disclaimer">Generated from '
+                  f'{esc(os.path.basename(spec.get("__source","booth spec")))} · '
+                  f'Southeast Exhibits &amp; Events. {footer_note}</div>')
+
+    # height estimates for the planner (px @ 96dpi); the banner + draft box ride on
+    # slide 1, so their height reduces how many rows fit there.
+    banner_est = 0
+    if unverified:
+        banner_est += est_lines(", ".join(unverified), 120) * 20 + 34
+    if pending:
+        banner_est += 22 + sum(est_lines(x, 150) * 19 for x in pending) + 18
+    excl_est = (32 + sum(est_lines(f"{e.get('name','')} {e.get('reason','')}", 150) * 20
+                         for e in excluded) + 12) if excluded else 0
+
+    pages = plan_graphics_pages(row_costs, banner_est, excl_est)
+    gfx_slides = []
+    for i, pg in enumerate(pages):
+        head = "Graphics to Submit" if i == 0 else "Graphics to Submit (cont.)"
+        body = [banner] if pg["banner"] else []
+        if pg["rows"]:
+            body.append(f'<table>{thead_html}<tbody>'
+                        + "".join(row_htmls[r] for r in pg["rows"]) + '</tbody></table>')
+        if pg["excl"]:
+            body.append(excl)
+        if i == len(pages) - 1:
+            body.append(disclaimer)
+        gfx_slides.append(f"""
       <section class="slide slide-doc">
         {logo_tag}
-        <div class="pill-head">Graphics to Submit</div>
-        <div class="doc-body">
-          {banner}
-          <table>
-            <thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Material</th><th>Finishing type</th><th>Qty</th><th>Sided</th><th>Visible area / keep-clear</th><th>Notes</th></tr></thead>
-            <tbody>{rows}</tbody>
-          </table>
-          {excl}
-          <div class="disclaimer">Generated from {esc(os.path.basename(spec.get('__source','booth spec')))} · Southeast Exhibits &amp; Events. {footer_note}</div>
-        </div>
-      </section>"""
+        <div class="pill-head">{head}</div>
+        <div class="doc-body">{''.join(body)}</div>
+      </section>""")
+    graphics_slide = "".join(gfx_slides)
 
     # Artwork Guidelines rebuilt as a NATIVE 16×9 slide (was a pasted image of the
     # official one-pager) — same content/look (red section heads, the accepted-format
@@ -403,13 +497,24 @@ def main():
     spec_path = sys.argv[1] if len(sys.argv) > 1 else find_default_spec()
     spec = json.load(open(spec_path))
     spec["__source"] = os.path.basename(spec_path)
-    def _resolve(field):
-        p = spec.get(field)
+    base_dir = os.path.dirname(os.path.abspath(spec_path))
+    def _uri(p):
         if p and not os.path.isabs(p):
-            p = os.path.join(os.path.dirname(os.path.abspath(spec_path)), p)
+            p = os.path.join(base_dir, p)
         return rendering_data_uri(p)
-    spec["__rendering_uri"] = _resolve("rendering")            # labeled graphic-placement key
-    spec["__rendering_3d_uri"] = _resolve("rendering_3d")      # photoreal 3D booth render
+    # `rendering` (graphic-placement drawings): one path, or a list of paths /
+    # {"path","caption"} objects → one placement page each.
+    r = spec.get("rendering")
+    r_list = r if isinstance(r, list) else ([r] if r else [])
+    items = []
+    for it in r_list:
+        path = it.get("path") if isinstance(it, dict) else it
+        uri = _uri(path)
+        if uri:
+            items.append({"uri": uri, "caption": it.get("caption") if isinstance(it, dict) else None})
+    spec["__rendering_items"] = items
+    spec["__rendering_uri"] = items[0]["uri"] if items else ""   # back-compat (single image)
+    spec["__rendering_3d_uri"] = _uri(spec.get("rendering_3d"))  # overall booth render (own page)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
     html_path = os.path.abspath(f"{base}_Spec_Packet.html")
     pdf_path = os.path.abspath(f"{base}_Spec_Packet.pdf")

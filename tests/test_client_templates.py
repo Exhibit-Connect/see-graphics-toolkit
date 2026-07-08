@@ -69,3 +69,80 @@ def test_caption_rows_carry_trim_and_bleed_sizes():
     assert rows["File size WITH bleed"] == '80.12" W × 136.26" H'   # +1" each side
     assert rows["Material"] == "Fabric"
     assert rows["Sides"] == "Single-sided"
+
+
+def test_scale_pct_phrasing():
+    assert ct.scale_pct(0.5) == "built at ½ scale (print @200%)"
+    assert ct.scale_pct(1) == "full scale"
+
+
+def test_caption_rows_include_half_scale_build_size():
+    # SEE builds at ½ scale then prints 200% — the exact build size must be shown
+    rows = ct.caption_rows({"name": "Conf Room - F", "w": 588.15, "h": 95.2}, SETTINGS)
+    build = [v for k, v in rows if k.startswith("Build size")]
+    assert build, "expected a ½-scale build-size row"
+    assert '294.075" × 47.6" trim' in build[0]                 # 588.15/2 × 95.2/2
+    assert '295.075" × 48.6" with bleed' in build[0]           # (w+2)/2 × (h+2)/2
+
+
+def test_caption_rows_omit_build_scale_at_full_scale():
+    rows = dict(ct.caption_rows({"name": "X", "w": 40, "h": 40}, {"scale": 1, "bleed_per_side_in": 1.0}))
+    assert not any(k.startswith("Build size") for k in rows)
+
+
+def test_is_continuous_flag():
+    assert ct.is_continuous({"oversize_mode": "continuous"})
+    assert not ct.is_continuous({"oversize_mode": "tile"})
+    assert not ct.is_continuous({})
+
+
+def test_panel_guides_svg_draws_marked_doors():
+    panel = {"name": "F", "w": 588.15, "h": 95.2,
+             "door_marks": [{"x": 119.43, "w": 39.06, "label": "Door Cut 1"},
+                            {"x": 197.55, "w": 39.06, "label": "Door Cut 2"}]}
+    svg = pt.panel_guides_svg(panel, SETTINGS, DOOR, 0, 0, 1.4)
+    assert "Door Cut 1" in svg and "Door Cut 2" in svg
+    assert pt.C["door"] in svg
+    assert svg.count("<circle") == 0            # no side given -> mark the opening only
+
+
+def test_panel_guides_svg_marked_door_with_side_adds_holes():
+    panel = {"name": "F", "w": 300, "h": 95.2,
+             "door_marks": [{"x": 100, "w": 39.06, "label": "D1", "side": "left"}]}
+    svg = pt.panel_guides_svg(panel, SETTINGS, DOOR, 0, 0, 1.4)
+    assert svg.count("<circle") == 2            # handle + lock holes on the latch edge
+
+
+def test_continuous_oversize_draws_template_not_seam_notice():
+    spec = {"settings": SETTINGS, "door_standard": DOOR,
+            "panels": [{"name": "F", "w": 588.15, "h": 95.2, "oversize_mode": "continuous",
+                        "door_marks": [{"x": 119.43, "w": 39.06, "label": "Door Cut 1"}]}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 2, 2, oversized=True)
+    assert "One continuous graphic" in html            # the no-seams banner
+    assert "printed in sections and seamed" not in html  # NOT the tile/seam notice
+    assert "<svg" in html and "Door Cut 1" in html     # the drawn template with doors
+    assert "Door openings are marked" in html          # door clause present when doors exist
+
+
+def test_cover_tags_every_continuous_wall_one_piece():
+    # the cover "one piece" tag follows the continuous flag, not the artboard-oversized
+    # check — so a continuous wall that happens to fit an artboard is still marked
+    spec = {"settings": SETTINGS, "panels": [
+        {"name": "M", "w": 588.15, "h": 95.2, "oversize_mode": "continuous"},  # oversized + continuous
+        {"name": "N", "w": 314.73, "h": 95.2, "oversize_mode": "continuous"},  # continuous, fits artboard
+        {"name": "Seamed", "w": 603.0, "h": 48.0},                             # oversized, NOT continuous
+        {"name": "Plain", "w": 78.0, "h": 40.0},                               # normal single panel
+    ]}
+    over = {p["name"] for p in ct.oversized_panels(spec)}
+    html = ct._cover_page(spec, spec["panels"], over, 5)
+    assert html.count("one piece") == 2      # both continuous walls, not just the oversized one
+    assert "tile/seam" in html               # the oversized non-continuous piece
+
+
+def test_continuous_banner_omits_door_clause_when_no_doors():
+    # a wide wall printed in one piece but WITHOUT doors shouldn't claim doors are marked
+    spec = {"settings": SETTINGS, "panels": [{"name": "N", "w": 314.73, "h": 95.2,
+                                              "oversize_mode": "continuous"}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 2, 2, oversized=False)
+    assert "One continuous graphic" in html
+    assert "Door openings are marked" not in html

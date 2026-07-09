@@ -79,7 +79,7 @@ to the configured model (`OPENROUTER_MODEL`). Specifically:
 
 ## Requirements
 - Adobe Illustrator (for the `.jsx` template generator)
-- Python 3 with the pinned runtime deps (`pypdf`, `Pillow`, `openpyxl`):
+- Python 3.10+ (CI-validated on 3.11/3.12) with the pinned runtime deps (`pypdf`, `Pillow`, `openpyxl`):
   ```sh
   pip install -r requirements.txt
   ```

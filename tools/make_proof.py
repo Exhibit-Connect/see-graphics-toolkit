@@ -35,6 +35,7 @@ Exit codes: 0 = success; 1 = refusal (approval gate) or skipped files without
 """
 import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, tempfile
 import argparse
+import errno
 import fcntl, time
 import proofer
 import branding
@@ -63,16 +64,30 @@ def default_log_path():
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), LOG)
 
 
+# errnos that mean "another process holds the flock" and are worth retrying:
+# EWOULDBLOCK/EAGAIN per flock(2), plus EACCES which some platforms use for
+# the same condition. Anything else (e.g. ENOTSUP/ENOLCK on network mounts
+# that don't support flock at all) will NEVER clear, so retrying it just
+# stalls every log write for the full timeout and then refuses the approval.
+_LOCK_CONTENTION_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("EWOULDBLOCK", "EAGAIN", "EACCES"))
+    if e is not None)
+
+
 class _FileLock:
     """Exclusive advisory lock (flock on LOG + '.lock') guarding the log's
     load->append->save cycle - unlocked concurrent runs dropped each other's
     rows, including APPROVED records the dashboard depends on. Blocks briefly,
-    then raises TimeoutError rather than hanging a proof run forever."""
+    then raises TimeoutError rather than hanging a proof run forever. If the
+    filesystem does not support flock (e.g. SEE_PROOF_LOG on a network mount
+    raising ENOTSUP), proceeds WITHOUT the lock rather than failing - a
+    single-writer setup still gets its row recorded."""
 
     def __init__(self, target, timeout=10.0):
         self.path = target + ".lock"
         self.timeout = timeout
         self.f = None
+        self.locked = False
 
     def __enter__(self):
         self.f = open(self.path, "a", encoding="utf-8")
@@ -80,17 +95,28 @@ class _FileLock:
         while True:
             try:
                 fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.locked = True
                 return self
-            except OSError:
+            except OSError as e:
+                if e.errno not in _LOCK_CONTENTION_ERRNOS:
+                    # flock unsupported/broken here - not contention; go on
+                    # unlocked instead of stalling the timeout and refusing
+                    self.f.close()
+                    self.f = None
+                    return self
                 if time.time() >= deadline:
                     self.f.close()
+                    self.f = None
                     raise TimeoutError(f"could not lock {self.path} within {self.timeout:g}s "
                                        f"(another proof run holds it)")
                 time.sleep(0.05)
 
     def __exit__(self, *exc):
+        if self.f is None:
+            return
         try:
-            fcntl.flock(self.f, fcntl.LOCK_UN)
+            if self.locked:
+                fcntl.flock(self.f, fcntl.LOCK_UN)
         finally:
             self.f.close()
 # verdict badge colors come from the one check-status palette in proofer.BADGE

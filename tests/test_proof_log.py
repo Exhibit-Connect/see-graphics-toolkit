@@ -208,3 +208,42 @@ def test_logged_partial_approval_round_trips_as_partial(tmp_path, monkeypatch):
     spec = {"job": {"name": "Booth Build", "job_number": "1001"},
             "panels": [{"name": "F1"}, {"name": "F2"}]}
     assert dashboard.job_stage(spec, rows) == "Approved (1/2 items)"
+
+
+def test_flock_unsupported_filesystem_writes_promptly_without_lock(tmp_path, monkeypatch):
+    # P1-4 corner: on a mount where flock is unsupported, every attempt raises
+    # ENOTSUP — that is NOT contention, so the write must proceed unlocked
+    # immediately instead of stalling the 10s timeout and refusing the approval.
+    import errno as _errno
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+
+    def notsup_flock(fd, op):
+        if op & fcntl.LOCK_UN:
+            return                                    # never reached unlocked anyway
+        raise OSError(_errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(mp.fcntl, "flock", notsup_flock)
+    t0 = time.monotonic()
+    assert _log_row(approver="Jane Client") == str(log)
+    assert time.monotonic() - t0 < 2.0                # no 10s contention stall
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert rows[0]["Approved by"] == "Jane Client"    # the row really persisted
+
+
+def test_flock_contention_errnos_still_retry_and_time_out(tmp_path, monkeypatch):
+    # EWOULDBLOCK stays a retry-then-TimeoutError (the unsupported-fs fallback
+    # must not swallow real contention)
+    import errno as _errno
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+
+    def busy_flock(fd, op):
+        if op & fcntl.LOCK_UN:
+            return
+        raise OSError(_errno.EWOULDBLOCK, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(mp.fcntl, "flock", busy_flock)
+    with pytest.raises(TimeoutError):
+        with mp._FileLock(str(log), timeout=0.2):
+            pass

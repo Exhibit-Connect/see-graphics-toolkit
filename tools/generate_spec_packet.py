@@ -37,28 +37,38 @@ def est_lines(text, chars_per_line):
     return max(1, math.ceil(n / chars_per_line))
 
 
-def row_est_px(note_text, unverified):
-    """Estimated rendered height (px) of one panel row; the Notes cell dominates,
-    and the size cell wraps to a 2nd line when it carries the 'unverified' badge."""
-    lines = max(est_lines(note_text, 82), 2 if unverified else 1)
+def row_est_px(note_text, unverified, vis_lines=1, mat_lines=1):
+    """Estimated rendered height (px) of one panel row — the TALLEST cell wins,
+    not just the Notes cell. Counted columns: Notes (wrapped), the size cell
+    (2 lines when it carries the 'unverified' badge), the Visible-area cell
+    (`vis_lines`: one line per zone + a door line), and Material (`mat_lines`:
+    2 when interior_finish adds its own line). Zone-heavy booths previously
+    under-estimated by ~2x and rows were silently clipped off the slide."""
+    lines = max(est_lines(note_text, 82), 2 if unverified else 1,
+                max(1, vis_lines), max(1, mat_lines))
     return 18 + lines * 19   # cell padding + wrapped lines
 
 
 def plan_graphics_pages(row_costs, banner_est=0, excl_est=0,
-                        cap=GFX_CAP_PX, thead=GFX_THEAD_PX):
+                        cap=GFX_CAP_PX, thead=GFX_THEAD_PX, safety=0.9):
     """Pure planner: pack panel rows onto as many slides as needed.
 
     Returns a list of page dicts: {"banner": bool, "rows": [row_index,...],
-    "excl": bool}. The banner (unverified + draft notes) rides on page 1; the
-    excluded list rides on the last page with rows, or its own page if it won't
-    fit. Every row index appears on exactly one page, order preserved, and no
-    page exceeds `cap` unless a single item is itself larger than `cap` (a lone
-    oversized row still gets its own page so nothing is ever dropped)."""
+    "excl": bool}. The banner (unverified + draft notes) rides on page 1 (but a
+    first row that won't fit under it starts page 2 instead of overflowing); the
+    excluded list rides on the last page IF it fits under the cap, else its own
+    page. Every row index appears on exactly one page, order preserved, and no
+    page exceeds the derated cap unless a single item is itself larger than it
+    (a lone oversized row still gets its own page so nothing is ever dropped).
+    `safety` derates the cap (default 0.9) because these estimates duplicate the
+    deck's CSS metrics rather than measuring the render — better a slightly
+    emptier slide than a clipped panel row."""
+    cap = cap * safety
     pages = []
     cur = {"banner": banner_est > 0, "rows": [], "used": banner_est if banner_est > 0 else 0}
     for idx, cost in enumerate(row_costs):
         add = cost + (thead if not cur["rows"] else 0)
-        if cur["rows"] and cur["used"] + add > cap:
+        if cur["used"] + add > cap and (cur["rows"] or cur["banner"]):
             pages.append(cur)
             cur = {"banner": False, "rows": [], "used": 0}
             add = cost + thead
@@ -68,7 +78,7 @@ def plan_graphics_pages(row_costs, banner_est=0, excl_est=0,
 
     if excl_est > 0:
         last = pages[-1]
-        if last["rows"] and last["used"] + excl_est > cap:
+        if last["used"] + excl_est > cap and (last["rows"] or last["banner"]):
             pages.append({"banner": False, "rows": [], "used": excl_est, "excl": True})
         else:
             last["used"] += excl_est
@@ -234,7 +244,11 @@ def build_html(spec, final=False):
           <td class="vis">{visible_cell(p)}</td>
           <td class="note">{note}</td>
         </tr>""")
-        row_costs.append(row_est_px(note_txt, unv))
+        # Height estimate must count the tall cells: the Visible-area cell renders
+        # one line per zone plus a door line, and interior_finish adds a Material line.
+        vis_lines = len(p.get("zones", [])) + (1 if p.get("door") else 0)
+        mat_lines = 2 if p.get("interior_finish") else 1
+        row_costs.append(row_est_px(note_txt, unv, vis_lines, mat_lines))
 
     excl = ""
     if excluded:

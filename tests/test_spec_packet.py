@@ -162,6 +162,54 @@ def test_small_job_stays_single_graphics_slide():
     assert "Graphics to Submit (cont.)" not in html
 
 
+# ---- P0-13: pagination must not silently clip zone-heavy panel rows ----
+
+def test_row_est_px_counts_visible_and_material_lines():
+    base = gsp.row_est_px("", False)
+    assert gsp.row_est_px("", False, vis_lines=4) == 18 + 4 * 19    # zones + door dominate
+    assert gsp.row_est_px("", False, vis_lines=4) > base
+    assert gsp.row_est_px("", False, mat_lines=2) == 18 + 2 * 19    # interior_finish line
+
+
+def test_planned_pages_stay_under_derated_cap():
+    # the confirmed bug shape: 12 panels x 3 zones + interior finish estimated
+    # 488px but rendered ~884px on a 696px body -> ~3 rows clipped
+    costs = [gsp.row_est_px("", False, vis_lines=3, mat_lines=2)] * 12
+    pages = gsp.plan_graphics_pages(costs, banner_est=120)
+    assert len(pages) > 1                                           # actually paginated now
+    for pg in pages:
+        assert pg["used"] <= gsp.GFX_CAP_PX * 0.9                   # every page under the derated cap
+    assert [i for pg in pages for i in pg["rows"]] == list(range(12))
+
+
+def test_first_row_overflowing_banner_page_starts_page_two():
+    # a big banner nearly fills page 1: the first row must not be forced onto it
+    pages = gsp.plan_graphics_pages([200], banner_est=500)
+    assert pages[0]["banner"] is True and pages[0]["rows"] == []
+    assert pages[1]["rows"] == [0]
+
+
+def test_excluded_list_respects_the_cap():
+    # exclusions must not overflow a nearly-full last page — they get their own page
+    pages = gsp.plan_graphics_pages([500], excl_est=200)
+    assert pages[-1]["excl"] is True and pages[-1]["rows"] == []
+    assert sum(1 for pg in pages if pg["excl"]) == 1
+
+
+def test_zone_heavy_booth_keeps_every_panel_exactly_once():
+    many = dict(BASE)
+    many["panels"] = [{"name": f"ZP{i:02d}", "w": 100, "h": 50, "finish": "fabric",
+                       "interior_finish": "white PVC", "sided": "single",
+                       "zones": [{"x": 0, "y": 0, "w": 10, "h": 10, "kind": "live"},
+                                 {"x": 0, "y": 20, "w": 10, "h": 10, "kind": "keepclear", "label": "shelf"},
+                                 {"x": 0, "y": 40, "w": 10, "h": 10, "kind": "keepclear", "label": "tv"}]}
+                      for i in range(12)]
+    html = gsp.build_html(many)
+    for i in range(12):
+        assert html.count(f"ZP{i:02d}") == 1                        # each panel once — never clipped/duplicated
+    assert html.count('class="slide slide-doc"') >= 2               # split across slides
+
+
 # ---- P0-12: settings wired into the deck; live draft flag; scaled bleed text ----
 
 def test_how_to_build_slide_present_with_settings():

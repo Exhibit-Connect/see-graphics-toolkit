@@ -397,8 +397,11 @@ def build_proof_html(job, res, spec, thumb_b64, approve, meta):
     return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta, logo=_logo_data_uri()) + FOOT
 
 
-def _cover_body(job, spec, items, meta):
-    """The job COVER / summary page (a <section class='page'>)."""
+def _cover_body(job, spec, items, meta, unmatched=None):
+    """The job COVER / summary page (a <section class='page'>). `unmatched`
+    (list of 'filename (reason)' strings) renders a red caution block - a
+    client signing off the job must SEE which files the proof does not cover,
+    not just a console line the designer saw."""
     today = datetime.date.today().strftime("%B %d, %Y")
     logo = _logo_data_uri()
     brand = (f'<img class="logo" src="{logo}">' if logo
@@ -421,6 +424,13 @@ def _cover_body(job, spec, items, meta):
         srows += (f'<tr><td>{i}</td><td><b>{html.escape(name)}</b></td><td>{html.escape(size)}</td>'
                   f'<td{mcls}>{html.escape(material)}</td><td>{html.escape(sides)}</td><td>{html.escape(qty)}</td></tr>')
 
+    skipped_html = ""
+    if unmatched:
+        names = "; ".join(html.escape(str(u)) for u in unmatched)
+        skipped_html = (f'<div class="caution">&#9888; NOT INCLUDED in this proof: {names} — '
+                        f'these files could not be checked. Do not sign off this job until '
+                        f'every graphic is accounted for.</div>')
+
     return f"""<section class="page cover">
       <div class="brandrow">
         <div>{brand}
@@ -430,6 +440,7 @@ def _cover_body(job, spec, items, meta):
       <h1 class="cv">{html.escape(job)}</h1>
       <div class="jobgrid">{jobgrid}</div>
       <div class="totals">This proof covers <b>{n_graphics}</b> graphic(s) — <b>{n_pieces}</b> piece(s) total.</div>
+      {skipped_html}
       <table class="summary"><thead><tr><th>#</th><th>Item</th><th>Finish size (H × W)</th><th>Material</th><th>Sides</th><th>Qty</th></tr></thead>
         <tbody>{srows}</tbody></table>
       <div class="howto"><b>How to review:</b> Each graphic is on its own page that follows. For every item,
@@ -442,11 +453,12 @@ def _cover_body(job, spec, items, meta):
     </section>"""
 
 
-def build_job_html(job, spec, items, approve, base_meta):
-    """Whole-job document: cover page + one page per item, with Page X of Y."""
+def build_job_html(job, spec, items, approve, base_meta, unmatched=None):
+    """Whole-job document: cover page + one page per item, with Page X of Y.
+    `unmatched` files are disclosed in a caution block on the cover."""
     pages = len(items) + 1
     base_meta = dict(base_meta, pages=pages)
-    out = HEAD + _cover_body(job, spec, items, base_meta)
+    out = HEAD + _cover_body(job, spec, items, base_meta, unmatched)
     for idx, it in enumerate(items):
         meta = dict(base_meta, specs=it["specs"], placeholders=it["placeholders"],
                     missing=it["missing"], page=idx + 2, pages=pages)
@@ -473,6 +485,7 @@ def main():
     spec_path = panel_arg = job = approve = ack_review = None
     prepped_by = qc_by = version = fulfillment = None
     book = False
+    allow_skips = False
     raw = []
     i = 0
     while i < len(args):
@@ -497,6 +510,8 @@ def main():
             fulfillment = args[i + 1]; i += 2
         elif a == "--book":
             book = True; i += 1
+        elif a == "--allow-skips":
+            allow_skips = True; i += 1
         else:
             raw.append(a); i += 1
     files = collect_files(raw)
@@ -504,7 +519,7 @@ def main():
         print('usage: python3 make_proof.py <artwork ...> [--spec ...] [--panel NAME] [--job "Name"]\n'
               '       [--prepped-by "Name"] [--qc-by "Name"] [--version V]\n'
               '       [--fulfillment delivery|pickup] [--approve "Client Name"]\n'
-              '       [--ack-review "reason"] [--book]')
+              '       [--ack-review "reason"] [--allow-skips] [--book]')
         return
     spec = json.load(open(spec_path or proofer.find_default_spec()))
     job = job or spec.get("job", {}).get("name", "Untitled job")
@@ -514,7 +529,8 @@ def main():
                  "fulfillment": fulfillment, "ack_review": ack_review}
 
     if len(files) > 1 or book:
-        build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg)
+        build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg,
+                        allow_skips=allow_skips)
     else:
         build_single_proof(files[0], spec, job, job_no, approve, base_meta, panel_arg)
 
@@ -587,7 +603,7 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     print("Logged to  :", logged)
 
 
-def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
+def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, allow_skips=False):
     if approve:
         print("note: --approve is for a single item; the job document is a draft for per-item sign-off. Ignoring --approve.")
         approve = None
@@ -599,11 +615,11 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         try:
             res = proofer.run_checks(fname, spec, None)
         except Exception as e:
-            unmatched.append(f"{os.path.basename(fname)} ({e})"); continue
+            unmatched.append(f"{os.path.basename(fname)} (could not be read: {e})"); continue
         if res and res.get("error"):
             unmatched.append(f"{os.path.basename(fname)} ({res['error']})"); continue
         if not res:
-            unmatched.append(os.path.basename(fname)); continue
+            unmatched.append(f"{os.path.basename(fname)} (no matching panel)"); continue
         panel = res["panel"]
         specs = panel_specs(panel, spec, base_meta.get("version"))
         placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
@@ -616,11 +632,14 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
                       "placeholders": placeholders, "missing": missing,
                       "thumb_b64": b64img(thumb), "_thumb": thumb})
     if not items:
-        print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel"); return
+        print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel")
+        if unmatched:
+            print("  skipped:", ", ".join(unmatched))
+        sys.exit(2)
     items.sort(key=lambda it: panel_index.get(it["panel"]["name"], 999))
 
     try:
-        html_doc = build_job_html(job, spec, items, approve, base_meta)
+        html_doc = build_job_html(job, spec, items, approve, base_meta, unmatched)
     finally:
         for it in items:
             _cleanup(it.get("_thumb"))
@@ -641,8 +660,12 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         flag = "  ⚠ not client-ready" if (it["placeholders"] or it["missing"]) else ""
         print(f"    - {it['panel']['name']:14} {it['res']['verdict']}{flag}")
     if unmatched:
-        print("  unmatched (skipped):", ", ".join(unmatched))
+        print("  ⚠ NOT INCLUDED (disclosed on the proof cover):", ", ".join(unmatched))
     print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
+    if unmatched and not allow_skips:
+        print(f"{len(unmatched)} file(s) could not be included — fix them, or re-run with "
+              f"--allow-skips to accept the disclosed omission. Exiting nonzero.")
+        sys.exit(1)
 
 
 def _approval_block(res, placeholders, missing, fname, ack_review=None):

@@ -86,6 +86,89 @@ def test_job_totals_counts_graphics_and_pieces():
     assert mp.job_totals(items) == (3, 4)          # 2 + 1 + default 1
 
 
+# ---------- P0-11: job proof must disclose files it could not include ----------
+JOB_PANEL = {"name": "F1", "w": 78, "h": 134, "finish": "Fabric"}
+JOB_SPEC = {"job": {"name": "Booth Build", "client": "Acme Co", "job_number": "1001"},
+            "settings": {}, "panels": [JOB_PANEL]}
+
+
+def _canned_job_res():
+    return {"panel": JOB_PANEL, "how": "matched from filename", "info": {"kind": "pdf"},
+            "results": {"size": ("PASS", "ok"), "color": ("PASS", "CMYK")},
+            "verdict": "PASS", "fixes": []}
+
+
+def _job_items():
+    res = _canned_job_res()
+    return [{"panel": JOB_PANEL, "res": res, "specs": mp.panel_specs(JOB_PANEL, JOB_SPEC),
+             "fname": "F1.pdf", "placeholders": [], "missing": [], "thumb_b64": ""}]
+
+
+def test_build_job_html_discloses_unmatched_on_cover():
+    doc = mp.build_job_html("Booth Build", JOB_SPEC, _job_items(), None, {},
+                            unmatched=["wall_x.pdf (no matching panel)"])
+    assert "NOT INCLUDED in this proof" in doc
+    assert "wall_x.pdf" in doc and "no matching panel" in doc
+
+
+def test_build_job_html_no_block_when_nothing_skipped():
+    doc = mp.build_job_html("Booth Build", JOB_SPEC, _job_items(), None, {})
+    assert "NOT INCLUDED" not in doc
+
+
+def test_job_proof_with_unreadable_file_exits_nonzero(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_checks(path, spec, panel_arg=None):
+        if "bad" in path:
+            raise ValueError("unreadable artwork")
+        return _canned_job_res()
+
+    monkeypatch.setattr(mp.proofer, "run_checks", fake_run_checks)
+    with pytest.raises(SystemExit) as ei:
+        mp.build_job_proof(["bad.pdf", "F1.pdf"], JOB_SPEC, "Booth Build", "1001",
+                           None, {}, None)
+    assert ei.value.code == 1
+    out = capsys.readouterr().out
+    assert "NOT INCLUDED" in out and "--allow-skips" in out
+    doc = open("Booth_Build_JOB_PROOF.html").read()   # document still produced
+    assert "NOT INCLUDED in this proof" in doc and "bad.pdf" in doc
+    assert "unreadable artwork" in doc                 # per-file reason disclosed
+
+
+def test_job_proof_allow_skips_overrides_exit(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_checks(path, spec, panel_arg=None):
+        if "bad" in path:
+            raise ValueError("unreadable artwork")
+        return _canned_job_res()
+
+    monkeypatch.setattr(mp.proofer, "run_checks", fake_run_checks)
+    mp.build_job_proof(["bad.pdf", "F1.pdf"], JOB_SPEC, "Booth Build", "1001",
+                       None, {}, None, allow_skips=True)   # no SystemExit
+    assert "NOT INCLUDED" in capsys.readouterr().out
+
+
+def test_job_proof_clean_run_has_no_skip_block_or_exit(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mp.proofer, "run_checks",
+                        lambda *a, **k: _canned_job_res())
+    mp.build_job_proof(["F1.pdf", "F1_b.pdf"], JOB_SPEC, "Booth Build", "1001",
+                       None, {}, None)
+    assert "NOT INCLUDED" not in open("Booth_Build_JOB_PROOF.html").read()
+
+
+def test_job_proof_all_files_skipped_exits_nonzero(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: None)  # no panel match
+    with pytest.raises(SystemExit) as ei:
+        mp.build_job_proof(["x.pdf", "y.pdf"], JOB_SPEC, "Booth Build", "1001",
+                           None, {}, None)
+    assert ei.value.code == 2
+    assert "no files matched" in capsys.readouterr().out
+
+
 # ---------- P0-10: thumbnails must never embed a stale/wrong image ----------
 class _R:
     def __init__(self, rc):

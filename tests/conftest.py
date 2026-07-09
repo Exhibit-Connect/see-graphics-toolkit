@@ -10,6 +10,13 @@ if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-goldens", action="store_true", default=False,
+        help="rewrite tests/golden/* from the current output instead of comparing "
+             "(review the diff before committing — goldens pin client-facing output)")
+
+
 @pytest.fixture(autouse=True)
 def _isolate_proof_log(tmp_path, monkeypatch):
     """The proof log now defaults to a FIXED path at the repo root (P1-4).

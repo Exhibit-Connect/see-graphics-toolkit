@@ -261,8 +261,11 @@ def _logo_data_uri():
     return ""
 
 
-def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver):
+def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver,
+              today=None):
     """Append one row to the proof log; returns where the row landed.
+    `today` (a datetime.date, injectable for tests — mirrors dashboard.py)
+    defaults to the real date.
 
     The whole load->append->save cycle holds an exclusive flock, and NO record
     is ever lost: when openpyxl is missing or the workbook can't be loaded or
@@ -271,7 +274,9 @@ def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, 
     destination could be written - the approve path then refuses to stamp
     (via _log_proof_safe)."""
     path = default_log_path()
-    row = [datetime.date.today().isoformat(), job, job_no or "", panel,
+    today = today or datetime.date.today()
+    row = [today.isoformat() if hasattr(today, "isoformat") else str(today),
+           job, job_no or "", panel,
            os.path.basename(fname), verdict, status, version or "",
            prepped or "", qc or "", approver or ""]
     with _FileLock(path):
@@ -390,11 +395,13 @@ def _item_footer(meta, today, job_no):
       </footer>"""
 
 
-def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
+def _item_body(job, res, spec, thumb_b64, approve, meta, logo="", today=None):
     """One item's page (no <html>/<body> wrapper) - a <section class='page'>.
     `logo` (a data URI) shows a small mark in the header for a standalone proof;
-    in the job document the cover carries the logo, so item pages pass ''."""
-    today = datetime.date.today().strftime("%B %d, %Y")
+    in the job document the cover carries the logo, so item pages pass ''.
+    `today` (a preformatted display string, injectable for golden tests —
+    mirrors dashboard.py's injectable today) defaults to the real date."""
+    today = today or datetime.date.today().strftime("%B %d, %Y")
     verdict = res["verdict"]
     panel = res["panel"]
     specs = meta["specs"]
@@ -468,17 +475,19 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
     </section>"""
 
 
-def build_proof_html(job, res, spec, thumb_b64, approve, meta):
-    """Single-item proof (full HTML document)."""
-    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta, logo=_logo_data_uri()) + FOOT
+def build_proof_html(job, res, spec, thumb_b64, approve, meta, today=None):
+    """Single-item proof (full HTML document). `today` is injectable (P2-6)."""
+    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta,
+                             logo=_logo_data_uri(), today=today) + FOOT
 
 
-def _cover_body(job, spec, items, meta, unmatched=None):
+def _cover_body(job, spec, items, meta, unmatched=None, today=None):
     """The job COVER / summary page (a <section class='page'>). `unmatched`
     (list of 'filename (reason)' strings) renders a red caution block - a
     client signing off the job must SEE which files the proof does not cover,
-    not just a console line the designer saw."""
-    today = datetime.date.today().strftime("%B %d, %Y")
+    not just a console line the designer saw. `today` (display string) is
+    injectable for golden tests; defaults to the real date."""
+    today = today or datetime.date.today().strftime("%B %d, %Y")
     logo = _logo_data_uri()
     brand = (f'<img class="logo" src="{logo}">' if logo
              else '<div class="wordmark">Southeast Exhibits &amp; Events</div>')
@@ -529,16 +538,17 @@ def _cover_body(job, spec, items, meta, unmatched=None):
     </section>"""
 
 
-def build_job_html(job, spec, items, approve, base_meta, unmatched=None):
+def build_job_html(job, spec, items, approve, base_meta, unmatched=None, today=None):
     """Whole-job document: cover page + one page per item, with Page X of Y.
-    `unmatched` files are disclosed in a caution block on the cover."""
+    `unmatched` files are disclosed in a caution block on the cover.
+    `today` is injectable (P2-6) and threads to the cover and every item page."""
     pages = len(items) + 1
     base_meta = dict(base_meta, pages=pages)
-    out = HEAD + _cover_body(job, spec, items, base_meta, unmatched)
+    out = HEAD + _cover_body(job, spec, items, base_meta, unmatched, today=today)
     for idx, it in enumerate(items):
         meta = dict(base_meta, specs=it["specs"], placeholders=it["placeholders"],
                     missing=it["missing"], page=idx + 2, pages=pages)
-        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta)
+        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta, today=today)
     return out + FOOT
 
 

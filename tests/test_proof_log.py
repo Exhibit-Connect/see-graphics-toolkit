@@ -247,3 +247,46 @@ def test_flock_contention_errnos_still_retry_and_time_out(tmp_path, monkeypatch)
     with pytest.raises(TimeoutError):
         with mp._FileLock(str(log), timeout=0.2):
             pass
+
+
+# ---------- P1-4: the approve row records a post-log render failure ----------
+def _run_single(monkeypatch, approve="Jane Client", render_ok=False):
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: _canned_res())
+    monkeypatch.setattr(mp.proofer, "render_pdf", lambda *a, **k: render_ok)
+    return mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
+                                 approve, dict(META), None)
+
+
+def test_approve_render_failure_annotates_the_logged_row(tmp_path, monkeypatch, capsys):
+    # the approve path logs BEFORE rendering; if the PDF render then fails the
+    # SAME row must say so (same wording as the non-approve path)
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    monkeypatch.chdir(tmp_path)
+    assert _run_single(monkeypatch) == 0
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert len(rows) == 1                                # updated in place, no dup
+    assert rows[0]["Status"] == "APPROVED — PDF render failed (HTML only)"
+    assert "Status annotated" in capsys.readouterr().out
+
+
+def test_approve_render_success_row_stays_plain(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    monkeypatch.chdir(tmp_path)
+    assert _run_single(monkeypatch, render_ok=True) == 0
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert [r["Status"] for r in rows] == ["APPROVED"]
+
+
+def test_approve_render_failure_with_csv_fallback_appends_follow_up_row(tmp_path, monkeypatch):
+    # when the approval landed in the CSV fallback (no openpyxl) the xlsx row
+    # can't be annotated in place — a follow-up row records the outcome instead
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mp, "openpyxl", None)
+    assert _run_single(monkeypatch) == 0
+    rows = list(csv.reader(open(tmp_path / "proof_log_fallback.csv",
+                                encoding="utf-8", newline="")))
+    statuses = [r[mp.LOG_HEADER.index("Status")] for r in rows[1:]]
+    assert statuses == ["APPROVED", "APPROVED — PDF render failed (HTML only)"]

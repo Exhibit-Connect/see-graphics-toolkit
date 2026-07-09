@@ -321,6 +321,39 @@ def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, 
         return f"{csv_path} (xlsx unavailable: {xlsx_err})"
 
 
+def _annotate_last_log_row(fname, panel, status, note):
+    """Append `note` to the Status of the MOST RECENT xlsx log row matching
+    (File, Panel / Item, Status) — the approve path logs BEFORE rendering (an
+    approval that can't be logged must not stamp), so when the PDF render then
+    fails its row needs a follow-up annotation (P1-4). Same flock as
+    log_proof. Returns True when the row was updated in place; False when it
+    couldn't be (openpyxl missing, the row landed in the CSV fallback, the
+    workbook is locked/corrupt) so the caller appends a follow-up row
+    instead — the outcome is recorded either way."""
+    if not openpyxl:
+        return False
+    path = default_log_path()
+    base = os.path.basename(fname)
+    f_col = LOG_HEADER.index("File") + 1
+    p_col = LOG_HEADER.index("Panel / Item") + 1
+    s_col = LOG_HEADER.index("Status") + 1
+    try:
+        with _FileLock(path):
+            if not os.path.exists(path):
+                return False
+            wb = openpyxl.load_workbook(path)
+            ws = wb.active
+            for r in range(ws.max_row, 1, -1):
+                if (ws.cell(r, f_col).value == base and ws.cell(r, p_col).value == panel
+                        and ws.cell(r, s_col).value == status):
+                    ws.cell(r, s_col).value = status + note
+                    wb.save(path)
+                    return True
+            return False
+    except Exception:
+        return False
+
+
 CSS_PROOF = f"""
   @page {{ size: letter portrait; margin: 0.5in; }}
   body {{ font-family: {branding.FONT_STACK}; color:#1a1a1a; font-size:12px; margin:0; }}
@@ -731,6 +764,20 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     with open(hp, "w", encoding="utf-8") as f:
         f.write(page)
     ok = proofer.render_pdf(hp, pp)
+    if approve and not ok:
+        # P1-4: the approve path logged BEFORE the render (see above), so a
+        # failed render would leave its row promising a PDF that was never
+        # produced. Annotate that row's Status in place (same wording as the
+        # non-approve path below); when it can't be updated (CSV fallback,
+        # locked workbook) append a follow-up row instead.
+        note = " — PDF render failed (HTML only)"
+        if _annotate_last_log_row(fname, panel["name"], status, note):
+            logged = f"{logged} (Status annotated: PDF render failed, HTML only)"
+        else:
+            logged, _ = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"],
+                                        status + note, base_meta.get("version"),
+                                        base_meta.get("prepped_by"), base_meta.get("qc_by"),
+                                        approve)
     if not approve:
         # log AFTER the render so the row's Status reflects what actually exists
         # (the approve path logs BEFORE stamping instead - see above)

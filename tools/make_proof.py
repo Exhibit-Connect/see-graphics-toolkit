@@ -28,7 +28,8 @@ Usage:
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
 """
-import sys, os, re, json, glob, base64, subprocess, datetime, html, functools, tempfile
+import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, functools, tempfile
+import fcntl, time
 import proofer
 try:
     import openpyxl
@@ -36,7 +37,55 @@ except Exception:
     openpyxl = None
 
 RED = proofer.branding.RED
-LOG = "proof_log.xlsx"
+LOG = "proof_log.xlsx"                    # basename - resolve via default_log_path()
+LOG_ENV = "SEE_PROOF_LOG"                 # overrides the log location
+FALLBACK_CSV = "proof_log_fallback.csv"   # written when the xlsx can't be
+# The one shared log-row contract (make_proof writes it, dashboard reads it).
+LOG_HEADER = ["Date", "Job", "Job #", "Panel / Item", "File", "Verdict", "Status",
+              "Proof version", "Prepped by", "QC'd by", "Approved by"]
+
+
+def default_log_path():
+    """The one place the proof log lives: $SEE_PROOF_LOG if set, else
+    proof_log.xlsx at the REPO ROOT (one level above tools/). A cwd-relative
+    path used to scatter records across job folders where the dashboard never
+    found them."""
+    env = os.environ.get(LOG_ENV)
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), LOG)
+
+
+class _FileLock:
+    """Exclusive advisory lock (flock on LOG + '.lock') guarding the log's
+    load->append->save cycle - unlocked concurrent runs dropped each other's
+    rows, including APPROVED records the dashboard depends on. Blocks briefly,
+    then raises TimeoutError rather than hanging a proof run forever."""
+
+    def __init__(self, target, timeout=10.0):
+        self.path = target + ".lock"
+        self.timeout = timeout
+        self.f = None
+
+    def __enter__(self):
+        self.f = open(self.path, "a")
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if time.time() >= deadline:
+                    self.f.close()
+                    raise TimeoutError(f"could not lock {self.path} within {self.timeout:g}s "
+                                       f"(another proof run holds it)")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+        finally:
+            self.f.close()
 VCOL = {"PASS": "#2E9E40", "REVIEW": "#F7941E", "FAIL": RED}
 VLABEL = {"PASS": "PASS", "REVIEW": "NEEDS REVIEW", "FAIL": "FAIL"}
 CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas | Atlanta | NJ/NY | Dallas "
@@ -208,20 +257,42 @@ def _logo_data_uri():
 
 
 def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver):
-    if not openpyxl:
-        return "(openpyxl missing - log skipped)"
-    header = ["Date", "Job", "Job #", "Panel / Item", "File", "Verdict", "Status",
-              "Proof version", "Prepped by", "QC'd by", "Approved by"]
-    if os.path.exists(LOG):
-        wb = openpyxl.load_workbook(LOG); ws = wb.active
-    else:
-        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Proofs"
-        ws.append(header)
-    ws.append([datetime.date.today().isoformat(), job, job_no or "", panel,
-               os.path.basename(fname), verdict, status, version or "",
-               prepped or "", qc or "", approver or ""])
-    wb.save(LOG)
-    return LOG
+    """Append one row to the proof log; returns where the row landed.
+
+    The whole load->append->save cycle holds an exclusive flock, and NO record
+    is ever lost: when openpyxl is missing or the workbook can't be loaded or
+    saved (locked/corrupt), the same row is appended to proof_log_fallback.csv
+    next to the log and the returned note names it. Raises only when NEITHER
+    destination could be written - the approve path then refuses to stamp
+    (via _log_proof_safe)."""
+    path = default_log_path()
+    row = [datetime.date.today().isoformat(), job, job_no or "", panel,
+           os.path.basename(fname), verdict, status, version or "",
+           prepped or "", qc or "", approver or ""]
+    with _FileLock(path):
+        if openpyxl:
+            try:
+                if os.path.exists(path):
+                    wb = openpyxl.load_workbook(path); ws = wb.active
+                else:
+                    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Proofs"
+                    ws.append(LOG_HEADER)
+                ws.append(row)
+                wb.save(path)
+                return path
+            except Exception as e:
+                xlsx_err = f"{type(e).__name__}: {e}"
+        else:
+            xlsx_err = "openpyxl missing"
+        # CSV fallback - the record must not be lost
+        csv_path = os.path.join(os.path.dirname(path) or ".", FALLBACK_CSV)
+        new = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(LOG_HEADER)
+            w.writerow(row)
+        return f"{csv_path} (xlsx unavailable: {xlsx_err})"
 
 
 CSS_PROOF = """
@@ -573,8 +644,8 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
                                          approve)
         if not log_ok:
             print(f"⛔ Refusing to stamp APPROVED: the approval could not be logged {logged}.\n"
-                  f"   Every approval must be recorded in {LOG} — fix the log (install openpyxl, "
-                  f"close/unlock the file) and re-run.")
+                  f"   Every approval must be recorded in {default_log_path()} (or its CSV "
+                  f"fallback) — fix the log location/permissions and re-run.")
             sys.exit(1)
 
     thumb = thumbnail(fname, ext)
@@ -589,11 +660,15 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     hp = os.path.abspath(base + suffix + ".html")
     pp = os.path.abspath(base + suffix + ".pdf")
     open(hp, "w").write(page)
-    if not approve:
-        logged = log_proof(job, job_no, panel["name"], fname, res["verdict"], status,
-                           base_meta.get("version"), base_meta.get("prepped_by"),
-                           base_meta.get("qc_by"), approve)
     ok = proofer.render_pdf(hp, pp)
+    if not approve:
+        # log AFTER the render so the row's Status reflects what actually exists
+        # (the approve path logs BEFORE stamping instead - see above)
+        if not ok:
+            status += " — PDF render failed (HTML only)"
+        logged, _ = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"], status,
+                                    base_meta.get("version"), base_meta.get("prepped_by"),
+                                    base_meta.get("qc_by"), approve)
     print(f"\nItem {panel['name']}  ·  verdict {res['verdict']}  ·  " +
           (f"APPROVED by {approve}" if approve else "awaiting client sign-off"))
     if not approve and (placeholders or missing):
@@ -648,11 +723,14 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
     hp = os.path.abspath(base + "_JOB_PROOF.html")
     pp = os.path.abspath(base + "_JOB_PROOF.pdf")
     open(hp, "w").write(html_doc)
-    for it in items:
-        log_proof(job, job_no, it["panel"]["name"], it["fname"], it["res"]["verdict"],
-                  "PROOFED (job doc)", base_meta.get("version"),
-                  base_meta.get("prepped_by"), base_meta.get("qc_by"), None)
     ok = proofer.render_pdf(hp, pp)
+    # log AFTER the render so the rows' Status reflects what actually exists
+    status = "PROOFED (job doc)" + ("" if ok else " — PDF render failed (HTML only)")
+    logged = None
+    for it in items:
+        logged, _ = _log_proof_safe(job, job_no, it["panel"]["name"], it["fname"],
+                                    it["res"]["verdict"], status, base_meta.get("version"),
+                                    base_meta.get("prepped_by"), base_meta.get("qc_by"), None)
     n_graphics, n_pieces = job_totals(items)
     print(f"\nJOB PROOF · {job}")
     print(f"  {n_graphics} item(s), {n_pieces} piece(s) · {len(items) + 1} pages (cover + {len(items)})")
@@ -662,6 +740,8 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
     if unmatched:
         print("  ⚠ NOT INCLUDED (disclosed on the proof cover):", ", ".join(unmatched))
     print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
+    if logged:
+        print("Logged to  :", logged)
     if unmatched and not allow_skips:
         print(f"{len(unmatched)} file(s) could not be included — fix them, or re-run with "
               f"--allow-skips to accept the disclosed omission. Exiting nonzero.")
@@ -701,12 +781,10 @@ def _approval_block(res, placeholders, missing, fname, ack_review=None):
 
 
 def _log_proof_safe(*args):
-    """(logged, ok) - ok is False when the row could NOT be persisted (openpyxl
-    missing, or the workbook load/save raised). Used on the approval path: an
-    approval that cannot be logged must not stamp (invariant 4 adjacent - the
-    'stamped and logged' promise)."""
-    if not openpyxl:
-        return "(openpyxl missing - log skipped)", False
+    """(logged, ok) - ok is False only when the row could not be persisted
+    ANYWHERE (the xlsx path AND the CSV fallback both failed). Used on the
+    approval path: an approval that cannot be logged must not stamp
+    (invariant 4 adjacent - the 'stamped and logged' promise)."""
     try:
         return log_proof(*args), True
     except Exception as e:

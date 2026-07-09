@@ -14,6 +14,8 @@ SE_Graphics_Production_Department_Roles.docx
 # Redundant bundle (GitHub offers "Download ZIP") + runtime data
 SEE_Wall_Template_Kit.zip
 proof_log.xlsx
+proof_log.xlsx.lock
+proof_log_fallback.csv
 
 # Doc render-sources (the PDFs are the deliverables; HTML kept local for edits)
 docs/*.html

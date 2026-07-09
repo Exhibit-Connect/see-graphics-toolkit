@@ -149,8 +149,21 @@ def test_approve_job_placeholder_refused(in_tmp, monkeypatch, capsys):
     assert "Client = 'TBD'" in capsys.readouterr().out
 
 
-def test_approve_unloggable_openpyxl_missing_refused(in_tmp, monkeypatch, capsys):
+def test_approve_openpyxl_missing_lands_in_csv_fallback(in_tmp, monkeypatch, capsys):
+    # P1-4: a missing openpyxl no longer blocks the approval - the row lands in
+    # the CSV fallback instead (no record is ever lost), and the note names it
     monkeypatch.setattr(mp, "openpyxl", None)
+    _run(monkeypatch, canned_res(), "Jane Client")       # no SystemExit
+    assert os.path.exists("F1_PROOF_APPROVED.html")
+    csv_text = open("proof_log_fallback.csv").read()
+    assert "Jane Client" in csv_text and "F1" in csv_text
+    assert "proof_log_fallback.csv" in capsys.readouterr().out
+
+
+def test_approve_refused_when_no_log_destination_writable(in_tmp, monkeypatch, capsys):
+    # neither the xlsx nor the CSV fallback can be written -> the approval
+    # cannot be recorded -> it must not stamp
+    monkeypatch.setenv("SEE_PROOF_LOG", str(in_tmp / "no_such_dir" / "proof_log.xlsx"))
     with pytest.raises(SystemExit) as ei:
         _run(monkeypatch, canned_res(), "Jane Client")
     assert ei.value.code == 1

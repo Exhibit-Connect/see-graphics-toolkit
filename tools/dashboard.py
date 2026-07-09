@@ -10,7 +10,11 @@ produces, so it can't disagree with the other tools, and it degrades gracefully:
 no proof log -> every job shows pre-proof; no due date -> the countdown is "—".
 
 Usage:
-    python3 tools/dashboard.py [--jobs-dir DIR] [--pdf]
+    python3 tools/dashboard.py [--jobs-dir DIR] [--log PATH] [--pdf]
+
+The proof log is read from --log, else $SEE_PROOF_LOG, else the repo-root
+proof_log.xlsx (where make_proof writes) plus any proof_log.xlsx found inside
+--jobs-dir; every log read is printed.
 
 Free / zero-install: pure-Python HTML, optional PDF via headless Chrome.
 """
@@ -18,6 +22,7 @@ import json, sys, os, glob, html, datetime
 import proofer
 import branding
 import render
+import make_proof  # shared proof-log location (SEE_PROOF_LOG / repo root)
 
 try:
     import openpyxl
@@ -157,12 +162,32 @@ def discover_specs(jobs_dir=None):
     return out
 
 
+def find_logs(jobs_dir=None, explicit=None):
+    """Every proof log to read, deduped, existing files only. An explicit --log
+    path wins; otherwise the SHARED resolution make_proof writes to
+    ($SEE_PROOF_LOG, else repo root) plus the legacy cwd location, and - with
+    --jobs-dir - every proof_log.xlsx found recursively inside it (logs written
+    where make_proof happened to run used to be silently unused)."""
+    if explicit:
+        candidates = [explicit]
+    else:
+        candidates = [make_proof.default_log_path(), os.path.join(os.getcwd(), LOG)]
+        if jobs_dir:
+            candidates += sorted(glob.glob(os.path.join(jobs_dir, "**", LOG), recursive=True))
+    out, seen = [], set()
+    for p in candidates:
+        rp = os.path.realpath(p)
+        if rp in seen or not os.path.exists(p):
+            continue
+        seen.add(rp)
+        out.append(p)
+    return out
+
+
 def find_log():
-    here = os.path.dirname(os.path.abspath(__file__))
-    for p in (LOG, os.path.join(os.getcwd(), LOG), os.path.join(here, "..", LOG)):
-        if os.path.exists(p):
-            return p
-    return None
+    """First existing log from the shared resolution (compat wrapper)."""
+    paths = find_logs()
+    return paths[0] if paths else None
 
 
 def read_proof_log(path=None):
@@ -268,18 +293,27 @@ def build_dashboard_html(rows, today=None):
 def main():
     args = sys.argv[1:]
     jobs_dir = None
+    log_arg = None
     want_pdf = False
     i = 0
     while i < len(args):
         if args[i] == "--jobs-dir":
             jobs_dir = args[i + 1]; i += 2
+        elif args[i] == "--log":
+            log_arg = args[i + 1]; i += 2
         elif args[i] == "--pdf":
             want_pdf = True; i += 1
         else:
             i += 1
     today = datetime.date.today()
     specs = [s for _, s in discover_specs(jobs_dir)]
-    log_index = read_proof_log()
+    log_paths = find_logs(jobs_dir, log_arg)
+    log_index = {}
+    for p in log_paths:                       # merge every found log
+        for k, v in read_proof_log(p).items():
+            log_index.setdefault(k, []).extend(v)
+    print("Proof log(s) read:", ", ".join(log_paths) if log_paths else
+          f"none found ({make_proof.default_log_path()}) — stages shown pre-proof")
     rows = dashboard_rows(specs, log_index, today)
 
     hp = os.path.abspath("job_dashboard.html")

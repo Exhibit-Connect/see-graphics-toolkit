@@ -9,17 +9,15 @@ checks can never disagree.
 ```
 see-graphics-toolkit/
 ├─ tools/       the programs you run (Python + the Illustrator script)
-├─ docs/        read these — the overview, the AI brief, the instructions
+├─ docs/        read these — the workflow map and the instructions
 ├─ examples/    a finished example booth, numbered 1->6 in workflow order
 ├─ README.md    you are here
 └─ LICENSE
 ```
 
 ## New here? Start with these (in `docs/`)
-1. **`How_It_Works_Overview.pdf`** — one-page picture of the whole flow.
-2. **`Graphics_Design_AI_Brief.pdf`** — what each stage fixes, live vs. coming.
-3. **`Instructions.md`** — plain-language, step-by-step (written assuming Claude is helping).
-4. **`Workflow_Map.png`** — the whole flow as one diagram, with the tool used at each step and where each `examples/` file fits.
+1. **`Workflow_Map.png`** — the whole flow as one diagram, with the tool used at each step and where each `examples/` file fits.
+2. **`Instructions.md`** — plain-language, step-by-step (written assuming Claude is helping).
 
 ## The flow (and the tool for each step)
 | Step | Tool (`tools/`) | What it does |

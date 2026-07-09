@@ -92,8 +92,8 @@ Run `pip install -r requirements-dev.txt && pytest` (104 tests; covers the pure 
 `proofer.py` / `make_proof.py` / `branding.py` / `dashboard.py` / `client_templates.py` / `render.py` /
 `generate_spec_packet.py`).
 **Extend the suite whenever you add or change logic** in a tool. A behavior
-change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the two overview
-PDFs in `docs/`) are updated to match.
+change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the
+`docs/Workflow_Map` diagram) are updated to match.
 
 ## Critical rules
 - **Never commit secrets or large binaries.** `.openrouter_key`, `*.zip`, and the tools' runtime outputs are

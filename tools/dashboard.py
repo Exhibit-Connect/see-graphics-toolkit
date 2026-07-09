@@ -111,7 +111,11 @@ def job_risk_flags(spec, log_rows, today, due_soon_days=DUE_SOON_DAYS):
     if latest_verdict(log_rows) == "FAIL":
         flags.append("latest proof FAILS preflight")
     j = spec.get("job", {}) or {}
-    dd = days_to_due(j.get("approval_deadline") or j.get("due_date"), today)
+    # a truthy-but-unparseable deadline ('TBD', 'ASAP') must not short-circuit
+    # the due-date fallback - a job due tomorrow used to get NO flag
+    dd = days_to_due(j.get("approval_deadline"), today)
+    if dd is None:
+        dd = days_to_due(j.get("due_date"), today)
     if dd is not None:
         if dd < 0:
             flags.append(f"OVERDUE by {abs(dd)} day(s)")
@@ -140,7 +144,8 @@ def dashboard_rows(specs, log_index, today):
             rows.append({"job_number": "—",
                          "name": j.get("name") or spec.get("__source") or "—",
                          "client": "—", "show": "—", "due_date": "—",
-                         "days_to_due": None, "stage": "UNREADABLE", "verdict": None,
+                         "days_to_due": None, "deadline_days": None, "urgency": None,
+                         "stage": "UNREADABLE", "verdict": None,
                          "flags": ["booth file could not be parsed — fix the JSON"]})
             continue
         job_no = j.get("job_number") or j.get("estimate") or ""
@@ -149,19 +154,25 @@ def dashboard_rows(specs, log_index, today):
             logs = log_index.get(str(job_no), [])
         else:
             logs = name_index.get(str(j.get("name") or ""), [])
+        due_days = days_to_due(j.get("due_date"), today)
+        deadline_days = days_to_due(j.get("approval_deadline"), today)
+        dated = [d for d in (due_days, deadline_days) if d is not None]
         rows.append({
             "job_number": job_no or "—",
             "name": j.get("name") or j.get("client") or "—",
             "client": j.get("client") or "—",
             "show": j.get("show") or "—",
             "due_date": j.get("due_date") or "—",
-            "days_to_due": days_to_due(j.get("due_date"), today),
+            "days_to_due": due_days,
+            "deadline_days": deadline_days,
+            "urgency": min(dated) if dated else None,   # soonest of the two dates
             "stage": job_stage(spec, logs),
             "verdict": latest_verdict(logs),
             "flags": job_risk_flags(spec, logs, today),
         })
-    rows.sort(key=lambda r: (r["days_to_due"] is None,
-                             r["days_to_due"] if r["days_to_due"] is not None else 0))
+    # most urgent first: an overdue approval deadline outranks a far due date
+    rows.sort(key=lambda r: (r["urgency"] is None,
+                             r["urgency"] if r["urgency"] is not None else 0))
     return rows
 
 
@@ -265,14 +276,25 @@ def read_proof_log(path=None):
 
 # ---------- report ----------
 def _due_cell(row):
+    """Due-date cell: the due date + its countdown, PLUS the approval-deadline
+    countdown whenever the deadline is the sooner (driving) date - an overdue
+    deadline used to be invisible behind a comfortable due date."""
     dd = row["days_to_due"]
     base = html.escape(str(row["due_date"]))
-    if dd is None:
-        return base
-    if dd < 0:
-        return f'{base} <span class="od">({abs(dd)}d overdue)</span>'
-    cls = "cd soon" if dd <= DUE_SOON_DAYS else "cd"
-    return f'{base} <span class="{cls}">({dd}d)</span>'
+    if dd is not None:
+        if dd < 0:
+            base += f' <span class="od">({abs(dd)}d overdue)</span>'
+        else:
+            cls = "cd soon" if dd <= DUE_SOON_DAYS else "cd"
+            base += f' <span class="{cls}">({dd}d)</span>'
+    ad = row.get("deadline_days")
+    if ad is not None and (dd is None or ad < dd):
+        if ad < 0:
+            base += f' <span class="od">(approval {abs(ad)}d overdue)</span>'
+        else:
+            cls = "cd soon" if ad <= DUE_SOON_DAYS else "cd"
+            base += f' <span class="{cls}">(approval in {ad}d)</span>'
+    return base
 
 
 def build_dashboard_html(rows, today=None, log_note=None):

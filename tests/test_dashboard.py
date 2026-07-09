@@ -149,6 +149,42 @@ def test_no_job_number_job_joins_log_rows_by_name():
     assert dashboard.dashboard_rows([spec_tbd], log_index, TODAY)[0]["stage"] == "In proof"
 
 
+# ---------- P1-6: 'TBD' deadlines must not suppress flags; urgency = soonest date ----------
+def test_tbd_approval_deadline_does_not_suppress_due_date_flag():
+    # 'TBD' is truthy: it used to short-circuit the fallback, so a job due
+    # tomorrow got NO flag
+    spec = {"job": {"approval_deadline": "TBD", "due_date": "2026-07-02"},
+            "panels": [{"name": "A", "w": 10, "h": 20}]}
+    flags = dashboard.job_risk_flags(spec, [], TODAY)
+    assert any("due in 1" in f for f in flags)
+
+
+def test_unparseable_deadline_still_flags_overdue_due_date():
+    spec = {"job": {"approval_deadline": "ASAP", "due_date": "2026-06-28"},
+            "panels": [{"name": "A", "w": 10, "h": 20}]}
+    flags = dashboard.job_risk_flags(spec, [], TODAY)
+    assert any("OVERDUE by 3" in f for f in flags)
+
+
+def test_overdue_approval_deadline_sorts_urgent_despite_far_due_date():
+    specs = [
+        {"job": {"job_number": "J-NEAR", "name": "Near", "due_date": "2026-07-05"},
+         "panels": [{"name": "A", "w": 10, "h": 20}]},
+        {"job": {"job_number": "J-DEADLINE", "name": "Deadline", "due_date": "2026-09-01",
+                 "approval_deadline": "2026-06-29"},
+         "panels": [{"name": "B", "w": 10, "h": 20}]},
+    ]
+    rows = dashboard.dashboard_rows(specs, {}, TODAY)
+    assert rows[0]["job_number"] == "J-DEADLINE"     # overdue deadline outranks 4d due
+    assert rows[0]["urgency"] == -2
+    assert rows[0]["days_to_due"] == 62              # displayed due date unchanged
+    cell = dashboard._due_cell(rows[0])
+    assert "2026-09-01" in cell                      # due-date column kept
+    assert "approval 2d overdue" in cell             # deadline countdown shown when it drives
+    # when the due date itself drives, no approval note is added
+    assert "approval" not in dashboard._due_cell(rows[1])
+
+
 def test_dashboard_rows_stages_flags_and_urgency_sort():
     specs = [
         {"job": {"job_number": "J-LATE", "name": "Late Job", "due_date": "2026-07-03"},

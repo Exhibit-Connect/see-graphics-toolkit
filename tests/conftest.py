@@ -16,3 +16,14 @@ def _isolate_proof_log(tmp_path, monkeypatch):
     Point every test at its own tmp file so no test can write into the
     checkout; tests that need another location override SEE_PROOF_LOG."""
     monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_chrome(tmp_path, monkeypatch):
+    """Chrome is now RESOLVED (SEE_CHROME > mac bundles > PATH, P2-2), so a
+    developer machine's real Chrome/chromium could be launched by tests that
+    merely expect 'Chrome absent'. Pin every test to a deterministic
+    no-Chrome default; tests that want a (fake or real) Chrome set SEE_CHROME
+    themselves — it always wins the resolution. The tier-2 external smoke
+    test opts back into the machine's real Chrome explicitly."""
+    monkeypatch.setenv("SEE_CHROME", str(tmp_path / "chrome-not-installed"))

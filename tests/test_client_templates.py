@@ -213,7 +213,7 @@ def test_per_panel_failed_render_keeps_html_and_names_panel(tmp_path, monkeypatc
 
     monkeypatch.setattr(ct.render, "html_to_pdf", fake_pdf)
     # Chrome "absent": the failure is the legitimate fallback -> exit 0
-    monkeypatch.setattr(ct.render, "CHROME", str(tmp_path / "no_chrome"))
+    monkeypatch.setenv("SEE_CHROME", str(tmp_path / "no_chrome"))
     monkeypatch.setattr(sys, "argv", ["client_templates.py", sp, "--per-panel"])
     ct.main()                                            # no SystemExit
     out = capsys.readouterr().out
@@ -227,7 +227,7 @@ def test_render_failure_with_chrome_present_exits_1(tmp_path, monkeypatch, capsy
     monkeypatch.chdir(tmp_path)
     sp = _write_spec(tmp_path, [{"name": "A", "w": 10, "h": 20}])
     monkeypatch.setattr(ct.render, "html_to_pdf", lambda *a, **k: False)
-    monkeypatch.setattr(ct.render, "CHROME", sys.executable)   # "Chrome" exists
+    monkeypatch.setenv("SEE_CHROME", sys.executable)           # "Chrome" exists
     monkeypatch.setattr(sys, "argv", ["client_templates.py", sp])
     with pytest.raises(SystemExit) as ei:
         ct.main()
@@ -239,7 +239,7 @@ def test_chrome_absent_fallback_still_exit_0(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     sp = _write_spec(tmp_path, [{"name": "A", "w": 10, "h": 20}])
     monkeypatch.setattr(ct.render, "html_to_pdf", lambda *a, **k: False)
-    monkeypatch.setattr(ct.render, "CHROME", str(tmp_path / "no_chrome"))
+    monkeypatch.setenv("SEE_CHROME", str(tmp_path / "no_chrome"))
     monkeypatch.setattr(sys, "argv", ["client_templates.py", sp])
     ct.main()                                            # no SystemExit
     assert "PDF step skipped (Chrome not installed)" in capsys.readouterr().out

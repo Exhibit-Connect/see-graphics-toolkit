@@ -10,18 +10,62 @@ Success is verified, not assumed: the process must exit 0 with a real output
 file (or the file must be present and size-stable while Chrome lingers), the
 output must be structurally complete (PDF %%EOF / PNG IEND), and a PDF that is
 actually Chrome's own error page ("This site can't be reached" / ERR_*) is
-rejected — those used to ship as client-facing documents. Mac-centric (uses
-the Google Chrome app bundle); returns False if Chrome isn't installed so
-callers fall back to "open the HTML and Print -> Save as PDF".
+rejected — those used to ship as client-facing documents. Returns False if
+Chrome isn't installed so callers fall back to "open the HTML and Print ->
+Save as PDF".
 
-The render timeout is env-overridable via SEE_RENDER_TIMEOUT (seconds,
-default 60 — image-heavy proofs can exceed the old 20s budget).
+The Chrome binary is RESOLVED, not hardcoded (P2-2): $SEE_CHROME wins, then
+the macOS Chrome/Chromium app bundles, then a PATH lookup over the common
+Linux/CI names — the old single mac path silently downgraded every generator
+to "open the HTML" everywhere else. The render timeout is env-overridable via
+SEE_RENDER_TIMEOUT (seconds, default 60 — image-heavy proofs can exceed the
+old 20s budget).
 """
 import os, pathlib, re, subprocess, sys, tempfile, shutil, time
 
+# Compat alias: the historical (and still first-choice) macOS location. Kept
+# as a module global because other code monkeypatched/read render.CHROME;
+# find_chrome() consults it live, so an override still works.
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+_MAC_BUNDLES = ("/Applications/Chromium.app/Contents/MacOS/Chromium",)
+_PATH_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
+_UNRESOLVED = object()
+_path_chrome = _UNRESOLVED          # cached PATH-lookup result
 DEFAULT_TIMEOUT_S = 60.0
 MIN_BYTES = 1500          # anything smaller is a stub, not a real document
+
+
+def find_chrome(refresh=False):
+    """Resolve the Chrome/Chromium binary to run, or None if there is none.
+
+    Priority: $SEE_CHROME (always wins and is returned as-is, checked fresh on
+    every call so tests/one-off runs can redirect or disable it), then the mac
+    app-bundle paths (incl. the module CHROME alias), then `shutil.which` over
+    the common Linux/CI names. Only the PATH lookup is cached — pass
+    refresh=True to re-resolve after installing Chrome."""
+    env = os.environ.get("SEE_CHROME")
+    if env:
+        return env
+    for cand in (CHROME,) + _MAC_BUNDLES:
+        if cand and os.path.exists(cand):
+            return cand
+    global _path_chrome
+    if refresh or _path_chrome is _UNRESOLVED:
+        _path_chrome = None
+        for name in _PATH_NAMES:
+            hit = shutil.which(name)
+            if hit:
+                _path_chrome = hit
+                break
+    return _path_chrome
+
+
+def chrome_available():
+    """True when a runnable Chrome binary resolves AND exists on disk — the
+    one presence test callers should use for their fallback messaging
+    ('Chrome not installed' vs 'render FAILED')."""
+    c = find_chrome()
+    return bool(c and os.path.exists(c))
 
 
 def _timeout_s():
@@ -135,7 +179,8 @@ def _run_chrome(args, out_path, complete_predicate, runner=subprocess.Popen):
 def html_to_pdf(html_path, pdf_path, runner=subprocess.Popen):
     """Render html_path -> pdf_path with headless Chrome. Returns True only if
     a complete, non-error-page PDF was produced. Never hangs."""
-    if not os.path.exists(CHROME):
+    chrome = find_chrome()
+    if not chrome or not os.path.exists(chrome):
         return False
     try:
         os.remove(pdf_path)
@@ -147,7 +192,7 @@ def html_to_pdf(html_path, pdf_path, runner=subprocess.Popen):
         # machine (no Chrome), and CI runners execute Chrome as root where the
         # sandbox refuses to start. The input is our OWN generated HTML (with
         # validated/escaped interpolations - see spec_validate), not the web.
-        return _run_chrome([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+        return _run_chrome([chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
                             "--no-pdf-header-footer", "--virtual-time-budget=2000",
                             f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}",
                             file_uri(html_path)],
@@ -175,7 +220,8 @@ def svg_to_png(svg_path, png_path, scale=2, runner=subprocess.Popen):
     aspect ratio (qlmanage force-fits a square canvas and crops wide art). `scale`
     is the device pixel ratio for crispness. Returns True only on a verified,
     complete PNG; False if Chrome is unavailable (callers can fall back)."""
-    if not os.path.exists(CHROME):
+    chrome = find_chrome()
+    if not chrome or not os.path.exists(chrome):
         return False
     try:
         w, h = svg_px_size_from_text(open(svg_path, encoding="utf-8", errors="replace").read(4000))
@@ -187,7 +233,7 @@ def svg_to_png(svg_path, png_path, scale=2, runner=subprocess.Popen):
         pass
     prof = tempfile.mkdtemp(prefix="see_chrome_")
     try:
-        return _run_chrome([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+        return _run_chrome([chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
                             "--hide-scrollbars", f"--force-device-scale-factor={scale}",
                             f"--window-size={w},{h}", f"--user-data-dir={prof}",
                             f"--screenshot={png_path}", file_uri(svg_path)],

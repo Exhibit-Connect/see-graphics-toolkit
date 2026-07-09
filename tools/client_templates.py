@@ -306,7 +306,7 @@ def main():
     # Chrome-missing (legitimate open-the-HTML fallback, exit 0) and
     # Chrome-present-but-render-FAILED (exit 1) are different outcomes -
     # 'PDF step skipped' used to cover both, and main always exited 0.
-    chrome_present = os.path.exists(render.CHROME)
+    chrome_present = render.chrome_available()
     exit_code = 0
     if render.html_to_pdf(hp, pp):
         print("PDF :", pp, f"({os.path.getsize(pp)} bytes)")

@@ -652,21 +652,11 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     if not res:
         print("could not match to a panel — re-run with --panel NAME"); return 2
     panel = res["panel"]
-    specs = panel_specs(panel, spec, base_meta.get("version"))
-    placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
-                                            base_meta.get("qc_by"), panel.get("finish"))
-    placeholders = job_readiness(spec, job, base_meta.get("version")) + placeholders
-    if panel.get("needs_confirm"):
-        missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
+    refusal, specs, placeholders, missing = approval_decision(
+        res, spec, job, fname, approve, base_meta)
+    if refusal:
+        print(refusal); return 1
     ack_review = base_meta.get("ack_review")
-    if approve is not None and (is_blank(approve) or looks_placeholder(approve)):
-        print(f'⛔ Refusing to stamp APPROVED: approver "{approve}" is blank or a placeholder — '
-              f"--approve needs the real client approver's name.")
-        return 1
-    if approve:
-        msg = _approval_block(res, placeholders, missing, os.path.basename(fname), ack_review)
-        if msg:
-            print(msg); return 1
 
     status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
     if approve and ack_review:
@@ -799,6 +789,36 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
               f"--allow-skips to accept the disclosed omission. Exiting nonzero.")
         return 1
     return 0
+
+
+def approval_decision(res, spec, job, fname, approve, base_meta):
+    """The COMPLETE approval-gate decision for one checked item, as a PURE
+    function — no I/O, no Chrome/gs — so invariant 4 (approval must refuse
+    when a check fails or a measurement is unconfirmed) is testable end to
+    end (P2-3). Combines the readiness scan (placeholder values on panel and
+    job fields, missing prepped-by/QC names, needs_confirm dimensions) with
+    the approver-name validation and the _approval_block refusals
+    (FAIL / non-PASS size / un-acked REVIEW; ack_review comes from base_meta).
+
+    Returns (refusal, specs, placeholders, missing): `refusal` is a printable
+    refusal message, or None when approval may proceed (or when no approval
+    was requested); specs/placeholders/missing feed the proof page and the
+    not-client-ready warning either way."""
+    panel = res["panel"]
+    specs = panel_specs(panel, spec, base_meta.get("version"))
+    placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
+                                            base_meta.get("qc_by"), panel.get("finish"))
+    placeholders = job_readiness(spec, job, base_meta.get("version")) + placeholders
+    if panel.get("needs_confirm"):
+        missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
+    refusal = None
+    if approve is not None and (is_blank(approve) or looks_placeholder(approve)):
+        refusal = (f'⛔ Refusing to stamp APPROVED: approver "{approve}" is blank or a placeholder — '
+                   f"--approve needs the real client approver's name.")
+    elif approve:
+        refusal = _approval_block(res, placeholders, missing, os.path.basename(fname),
+                                  base_meta.get("ack_review"))
+    return refusal, specs, placeholders, missing
 
 
 def _approval_block(res, placeholders, missing, fname, ack_review=None):

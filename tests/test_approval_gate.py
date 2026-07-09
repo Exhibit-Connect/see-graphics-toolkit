@@ -82,6 +82,72 @@ def test_pass_verdict_clean_is_approvable():
     assert mp._approval_block(canned_res(), [], [], "f.pdf") is None
 
 
+# ---------- approval_decision (the pure, extracted gate - P2-3) ----------
+def _decide(res, approve, ack=None, spec=None):
+    meta = dict(META, ack_review=ack)
+    return mp.approval_decision(res, spec or CLEAN_SPEC, "Booth Build",
+                                "F1.pdf", approve, meta)
+
+
+def test_decision_fail_verdict_refuses():
+    res = canned_res("FAIL", {"size": ("PASS", "ok"), "color": ("FAIL", "RGB")})
+    refusal, specs, placeholders, missing = _decide(res, "Jane Client")
+    assert refusal and "FAILS preflight" in refusal and "color" in refusal
+    assert specs and placeholders == [] and missing == []
+
+
+def test_decision_size_warn_refuses_naming_measurement():
+    res = canned_res("REVIEW", {"size": ("WARN", "cannot verify finished size")})
+    refusal = _decide(res, "Jane Client")[0]
+    assert refusal and "unverified or wrong" in refusal
+    assert "cannot verify finished size" in refusal
+
+
+def test_decision_review_needs_ack_then_allows_with_reason():
+    res = canned_res("REVIEW", {"size": ("PASS", "ok"),
+                                "spelling": ("WARN", "1 word to review")})
+    refusal = _decide(res, "Jane Client")[0]
+    assert refusal and "--ack-review" in refusal and "spelling" in refusal
+    assert _decide(res, "Jane Client", ack="checked manually")[0] is None
+
+
+def test_decision_placeholder_approver_refuses():
+    refusal = _decide(canned_res(), "TBD")[0]
+    assert refusal and "blank or a placeholder" in refusal
+    assert _decide(canned_res(), "  ")[0] is not None
+
+
+def test_decision_needs_confirm_panel_refuses_and_reports_missing():
+    res = canned_res(panel={"name": "F1", "w": 78, "h": 134, "finish": "Fabric",
+                            "needs_confirm": True})
+    refusal, _, _, missing = _decide(res, "Jane Client")
+    assert refusal and "UNVERIFIED" in refusal
+    assert any("UNVERIFIED" in m for m in missing)
+
+
+def test_decision_job_placeholder_refuses():
+    spec = {"job": dict(CLEAN_SPEC["job"], client="TBD"), "settings": {},
+            "panels": CLEAN_SPEC["panels"]}
+    refusal, _, placeholders, _ = _decide(canned_res(), "Jane Client", spec=spec)
+    assert refusal and "Client = 'TBD'" in refusal
+    assert any("Client" in p for p in placeholders)
+
+
+def test_decision_clean_pass_approves():
+    refusal, specs, placeholders, missing = _decide(canned_res(), "Jane Client")
+    assert refusal is None and placeholders == [] and missing == []
+
+
+def test_decision_no_approve_never_refuses_but_still_reports_readiness():
+    # without --approve nothing is gated, but the not-client-ready data still
+    # feeds the proof page and console warning
+    res = canned_res("FAIL", {"size": ("FAIL", "wrong size")},
+                     panel={"name": "F1", "w": 78, "h": 134, "finish": "TBD"})
+    refusal, _, placeholders, _ = _decide(res, None)
+    assert refusal is None
+    assert any("TBD" in p for p in placeholders)
+
+
 # ---------- job-level placeholder gate ----------
 def test_job_readiness_flags_job_fields():
     spec = {"job": {"name": "Booth", "client": "TBD", "show": "Your Name Here",
@@ -111,6 +177,19 @@ def _run(monkeypatch, res, approve, ack=None, spec=None):
     meta = dict(META, ack_review=ack)
     return mp.build_single_proof("F1.pdf", spec or CLEAN_SPEC, "Booth Build", "1001",
                                  approve, meta, None)
+
+
+def test_approve_canned_fail_cli_refuses_no_artifacts_no_log(in_tmp, monkeypatch, capsys):
+    # P2-3's CLI-level scenario: canned FAIL + render_pdf -> False. The
+    # refusal must print, exit 1, and leave NO stamped proof and NO log row.
+    monkeypatch.setattr(mp.proofer, "render_pdf", lambda *a, **k: False)
+    res = canned_res("FAIL", {"size": ("PASS", "ok"), "color": ("FAIL", "RGB")})
+    rc = _run(monkeypatch, res, "Jane Client")
+    assert rc == 1
+    assert "FAILS preflight" in capsys.readouterr().out
+    assert not [f for f in os.listdir(".") if "APPROVED" in f]
+    assert not os.path.exists("proof_log.xlsx")
+    assert not os.path.exists("proof_log_fallback.csv")
 
 
 def test_approve_placeholder_approver_refused(in_tmp, monkeypatch, capsys):

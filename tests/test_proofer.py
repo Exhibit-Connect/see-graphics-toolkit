@@ -569,3 +569,29 @@ def test_check_size_per_axis_math_and_stretch_warn():
     assert st == "WARN"
     assert "stretched" in msg and "100 x 96 dpi" in msg
     assert "105.21" in msg                             # 10100/96 — the per-axis height
+
+
+def test_main_unknown_flag_exits_2_with_usage(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["proofer.py", "--bogus", "art.pdf"])
+    with pytest.raises(SystemExit) as ei:
+        proofer.main()
+    assert ei.value.code == 2
+    err = capsys.readouterr().err
+    assert "unknown option: --bogus" in err and "usage:" in err
+
+
+def test_main_trailing_panel_without_value_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["proofer.py", "art.pdf", "--panel"])
+    with pytest.raises(SystemExit) as ei:
+        proofer.main()
+    assert ei.value.code == 2
+    err = capsys.readouterr().err
+    assert "--panel needs a value" in err and "usage:" in err
+
+
+def test_main_trailing_spec_without_value_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["proofer.py", "art.pdf", "--spec"])
+    with pytest.raises(SystemExit) as ei:
+        proofer.main()
+    assert ei.value.code == 2
+    assert "--spec needs a value" in capsys.readouterr().err

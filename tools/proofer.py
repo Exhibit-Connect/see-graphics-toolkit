@@ -998,20 +998,32 @@ def find_default_spec():
 
 
 def main():
+    usage = "usage: python3 proofer.py <artwork file> [--spec booth_spec.json] [--panel NAME]"
     args = sys.argv[1:]
     spec_path = None
     panel_arg = None
     files = []
     i = 0
     while i < len(args):
-        if args[i] == "--spec":
-            spec_path = args[i + 1]; i += 2
-        elif args[i] == "--panel":
-            panel_arg = args[i + 1]; i += 2
+        if args[i] in ("--spec", "--panel"):
+            # a trailing flag with no value used to IndexError out of the loop
+            if i + 1 >= len(args):
+                print(f"{args[i]} needs a value\n{usage}", file=sys.stderr)
+                sys.exit(2)
+            if args[i] == "--spec":
+                spec_path = args[i + 1]
+            else:
+                panel_arg = args[i + 1]
+            i += 2
+        elif args[i].startswith("--"):
+            # an unknown flag used to be treated as an artwork FILENAME and
+            # 'checked' - like make_proof/intake/ai_client, refuse with usage
+            print(f"unknown option: {args[i]}\n{usage}", file=sys.stderr)
+            sys.exit(2)
         else:
             files.append(args[i]); i += 1
     if not files:
-        print("usage: python3 proofer.py <artwork file> [--spec booth_spec.json] [--panel NAME]")
+        print(usage)
         return
     with open(spec_path or find_default_spec(), encoding="utf-8-sig") as f:
         spec = json.load(f)

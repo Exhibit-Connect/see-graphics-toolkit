@@ -126,7 +126,9 @@ def _howto():
 
 def panel_page_html(panel, spec, page, pages, oversized=False):
     st = spec.get("settings", {})
-    door = spec.get("door_standard", {})
+    # No door_standard in the spec -> the .jsx's built-in door (pt.DOOR_DEFAULT),
+    # so this client template draws the same door the production template draws.
+    door = spec.get("door_standard") or pt.DOOR_DEFAULT
     name = panel.get("name", "?")
     cap = "".join(f'<tr><td class="cl">{html.escape(l)}</td><td class="cv">{html.escape(str(v))}</td></tr>'
                   for l, v in caption_rows(panel, st))

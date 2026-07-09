@@ -22,6 +22,19 @@ GAP, LBL, PAD, HEADER = 26, 34, 24, 96
 C = {"bleed": "#00AEEF", "trim": "#111111", "safe": "#EC008C",
      "keep": "#F7941E", "live": "#39B54A", "door": "#ED1C24"}
 
+# SEE's standard door — the SINGLE Python source for the built-in door geometry,
+# and it MUST mirror the `SPEC.door_standard || {...}` fallback in
+# SEE_Wall_Template_Generator.jsx exactly (a drift test pins them together).
+# The production .jsx falls back to this full door when a spec has no
+# door_standard, so the previews/client templates must too — otherwise a
+# hand-authored spec yields a production template WITH the door and a client
+# template silently WITHOUT it, and the client designs over the door cut.
+DOOR_DEFAULT = {
+    "panel_w_in": 39.125, "panel_h_in": 95.21, "edge_offset_in": 4.3125,
+    "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
+    "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79},
+}
+
 
 def find_default_spec():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -61,39 +74,59 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
         o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}22" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
         tag = "LIVE" if z.get("kind") == "live" else "keep clear"
         o.append(f'<text x="{rx+4:.1f}" y="{ry+13:.1f}" font-size="8.5" font-weight="700" fill="{col}">{esc(tag)}</text>')
+    # The .jsx production generator falls back to its built-in door when the spec
+    # has no door_standard — mirror that here (single source: DOOR_DEFAULT) so
+    # the client template can never silently omit a door the production one draws.
+    door_standard = door_standard or DOOR_DEFAULT
+
+    def _holes(cx, stroke_w):
+        frags = []
+        for key in ("handle", "lock"):
+            hole = door_standard.get(key, DOOR_DEFAULT[key])
+            if hole:
+                cy = tby - hole.get("y_from_floor_in", DOOR_DEFAULT[key]["y_from_floor_in"]) * px
+                r = hole.get("dia_in", DOOR_DEFAULT[key]["dia_in"]) / 2 * px
+                frags.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" '
+                             f'fill="none" stroke="{C["door"]}" stroke-width="{stroke_w}"/>')
+        return frags
+
     side = panel.get("door")
-    if side in ("left", "right") and door_standard:
-        dW, dH = door_standard.get("panel_w_in", 39.125) * px, door_standard.get("panel_h_in", 95.21) * px
+    if side and side not in ("left", "right"):
+        # Exact lowercase left/right is the contract (the .jsx requires it too);
+        # warn loudly instead of silently drawing no door for "Left"/"rigth"/etc.
+        print(f'WARNING: panel "{panel.get("name", "?")}": unrecognized door value "{side}" — '
+              f'expected lowercase "left" or "right"; door NOT drawn (matches the Illustrator generator)',
+              file=sys.stderr)
+    if side in ("left", "right"):
+        dW = door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"]) * px
+        dH = door_standard.get("panel_h_in", DOOR_DEFAULT["panel_h_in"]) * px
         dl = tlx if side == "left" else (tlx + tw - dW)
         dtop = tby - dH
         o.append(f'<rect x="{dl:.1f}" y="{dtop:.1f}" width="{dW:.1f}" height="{dH:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
-        off = door_standard.get("edge_offset_in", 4.3125) * px
+        off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
         cx = (dl + off) if side == "left" else (dl + dW - off)
-        for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
-            if hole:
-                cy = tby - hole.get("y_from_floor_in", 38) * px
-                o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.6"/>')
+        o.extend(_holes(cx, 1.6))
         o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
     # Multiple marked doors on one long graphic (e.g. the conference-room run): each
     # is {x, w, label[, side]} in trim inches from the left, full trim height. `side`
     # (optional) adds the handle/lock holes on that latch edge; without it we just
     # mark the opening (per production: "leave it one graphic, mark where the doors are").
     for dm in panel.get("door_marks", []):
-        dmw = dm.get("w", (door_standard or {}).get("panel_w_in", 39.125)) * px
+        dmw = dm.get("w", door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"])) * px
         dmx = tlx + dm.get("x", 0) * px
         o.append(f'<rect x="{dmx:.1f}" y="{tty:.1f}" width="{dmw:.1f}" height="{th:.1f}" '
                  f'fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
         o.append(f'<text x="{dmx+3:.1f}" y="{tty+12:.1f}" font-size="8.5" font-weight="700" '
                  f'fill="{C["door"]}">{esc(dm.get("label", "DOOR"))}</text>')
         dside = dm.get("side")
-        if dside in ("left", "right") and door_standard:
-            off = door_standard.get("edge_offset_in", 4.3125) * px
+        if dside and dside not in ("left", "right"):
+            print(f'WARNING: panel "{panel.get("name", "?")}": unrecognized door_marks side "{dside}" — '
+                  f'expected lowercase "left" or "right"; opening marked but holes NOT drawn',
+                  file=sys.stderr)
+        if dside in ("left", "right"):
+            off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
             cx = (dmx + off) if dside == "left" else (dmx + dmw - off)
-            for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
-                if hole:
-                    cy = tby - hole.get("y_from_floor_in", 38) * px
-                    o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" '
-                             f'fill="none" stroke="{C["door"]}" stroke-width="1.4"/>')
+            o.extend(_holes(cx, 1.4))
     return "\n".join(o)
 
 

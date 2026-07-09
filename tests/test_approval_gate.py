@@ -109,43 +109,39 @@ def in_tmp(tmp_path, monkeypatch):
 def _run(monkeypatch, res, approve, ack=None, spec=None):
     monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: res)
     meta = dict(META, ack_review=ack)
-    mp.build_single_proof("F1.pdf", spec or CLEAN_SPEC, "Booth Build", "1001",
-                          approve, meta, None)
+    return mp.build_single_proof("F1.pdf", spec or CLEAN_SPEC, "Booth Build", "1001",
+                                 approve, meta, None)
 
 
 def test_approve_placeholder_approver_refused(in_tmp, monkeypatch, capsys):
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, canned_res(), "TBD")
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, canned_res(), "TBD")
+    assert rc == 1                                       # P1-7: refusal -> status 1
     assert "blank or a placeholder" in capsys.readouterr().out
-    assert not os.path.exists("F1_PROOF_APPROVED.html")
+    assert not os.path.exists("F1_PROOF_vC1_APPROVED.html")
 
 
 def test_approve_review_without_ack_refused_cli(in_tmp, monkeypatch, capsys):
     res = canned_res("REVIEW", {"size": ("PASS", "ok"), "spelling": ("WARN", "x")})
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, res, "Jane Client")
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, res, "Jane Client")
+    assert rc == 1
     assert "--ack-review" in capsys.readouterr().out
-    assert not os.path.exists("F1_PROOF_APPROVED.html")
+    assert not os.path.exists("F1_PROOF_vC1_APPROVED.html")
     assert not os.path.exists("proof_log.xlsx"), "a refused approval must not log"
 
 
 def test_approve_needs_confirm_panel_refused(in_tmp, monkeypatch, capsys):
     res = canned_res(panel={"name": "F1", "w": 78, "h": 134, "finish": "Fabric",
                             "needs_confirm": True})
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, res, "Jane Client")
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, res, "Jane Client")
+    assert rc == 1
     assert "UNVERIFIED" in capsys.readouterr().out
 
 
 def test_approve_job_placeholder_refused(in_tmp, monkeypatch, capsys):
     spec = {"job": dict(CLEAN_SPEC["job"], client="TBD"), "settings": {},
             "panels": CLEAN_SPEC["panels"]}
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, canned_res(), "Jane Client", spec=spec)
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, canned_res(), "Jane Client", spec=spec)
+    assert rc == 1
     assert "Client = 'TBD'" in capsys.readouterr().out
 
 
@@ -153,8 +149,8 @@ def test_approve_openpyxl_missing_lands_in_csv_fallback(in_tmp, monkeypatch, cap
     # P1-4: a missing openpyxl no longer blocks the approval - the row lands in
     # the CSV fallback instead (no record is ever lost), and the note names it
     monkeypatch.setattr(mp, "openpyxl", None)
-    _run(monkeypatch, canned_res(), "Jane Client")       # no SystemExit
-    assert os.path.exists("F1_PROOF_APPROVED.html")
+    assert _run(monkeypatch, canned_res(), "Jane Client") == 0
+    assert os.path.exists("F1_PROOF_vC1_APPROVED.html")
     csv_text = open("proof_log_fallback.csv").read()
     assert "Jane Client" in csv_text and "F1" in csv_text
     assert "proof_log_fallback.csv" in capsys.readouterr().out
@@ -164,31 +160,29 @@ def test_approve_refused_when_no_log_destination_writable(in_tmp, monkeypatch, c
     # neither the xlsx nor the CSV fallback can be written -> the approval
     # cannot be recorded -> it must not stamp
     monkeypatch.setenv("SEE_PROOF_LOG", str(in_tmp / "no_such_dir" / "proof_log.xlsx"))
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, canned_res(), "Jane Client")
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, canned_res(), "Jane Client")
+    assert rc == 1
     assert "could not be logged" in capsys.readouterr().out
-    assert not os.path.exists("F1_PROOF_APPROVED.html")
+    assert not os.path.exists("F1_PROOF_vC1_APPROVED.html")
 
 
 def test_approve_log_save_failure_refused(in_tmp, monkeypatch, capsys):
     def boom(*a, **k):
         raise OSError("disk full")
     monkeypatch.setattr(mp, "log_proof", boom)
-    with pytest.raises(SystemExit) as ei:
-        _run(monkeypatch, canned_res(), "Jane Client")
-    assert ei.value.code == 1
+    rc = _run(monkeypatch, canned_res(), "Jane Client")
+    assert rc == 1
     out = capsys.readouterr().out
     assert "could not be logged" in out and "disk full" in out
-    assert not os.path.exists("F1_PROOF_APPROVED.html")
+    assert not os.path.exists("F1_PROOF_vC1_APPROVED.html")
 
 
 def test_approve_with_ack_records_reason_in_html_and_log(in_tmp, monkeypatch, capsys):
     import openpyxl
     res = canned_res("REVIEW", {"size": ("PASS", "ok"),
                                 "spelling": ("WARN", "1 word to review")})
-    _run(monkeypatch, res, "Jane Client", ack="checked manually with the client")
-    doc = open("F1_PROOF_APPROVED.html").read()
+    assert _run(monkeypatch, res, "Jane Client", ack="checked manually with the client") == 0
+    doc = open("F1_PROOF_vC1_APPROVED.html").read()
     assert "APPROVED" in doc and "Jane Client" in doc
     assert "checked manually with the client" in doc      # reason on the proof
     rows = list(openpyxl.load_workbook("proof_log.xlsx").active.iter_rows(values_only=True))
@@ -200,14 +194,14 @@ def test_approve_with_ack_records_reason_in_html_and_log(in_tmp, monkeypatch, ca
 
 def test_clean_pass_approval_still_works(in_tmp, monkeypatch, capsys):
     import openpyxl
-    _run(monkeypatch, canned_res(), "Jane Client")
-    assert os.path.exists("F1_PROOF_APPROVED.html")
+    assert _run(monkeypatch, canned_res(), "Jane Client") == 0
+    assert os.path.exists("F1_PROOF_vC1_APPROVED.html")
     rows = list(openpyxl.load_workbook("proof_log.xlsx").active.iter_rows(values_only=True))
     assert rows[1:], "approval must be logged"
 
 
 def test_non_approve_review_proof_generation_unchanged(in_tmp, monkeypatch, capsys):
     res = canned_res("REVIEW", {"size": ("PASS", "ok"), "spelling": ("WARN", "x")})
-    _run(monkeypatch, res, None)                           # no SystemExit
-    assert os.path.exists("F1_PROOF.html")
+    assert _run(monkeypatch, res, None) == 0
+    assert os.path.exists("F1_PROOF_vC1.html")
     assert "awaiting client sign-off" in capsys.readouterr().out

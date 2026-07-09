@@ -27,8 +27,13 @@ Usage:
     # whole job (assembled document)
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
+        [--allow-skips]           # accept (and disclose) files that could not be included
+
+Exit codes: 0 = success; 1 = refusal (approval gate) or skipped files without
+--allow-skips; 2 = usage error / unreadable input / no panel match.
 """
 import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, functools, tempfile
+import argparse
 import fcntl, time
 import proofer
 try:
@@ -551,71 +556,101 @@ def collect_files(raw):
     return files
 
 
-def main():
-    args = sys.argv[1:]
-    spec_path = panel_arg = job = approve = ack_review = None
-    prepped_by = qc_by = version = fulfillment = None
-    book = False
-    allow_skips = False
-    raw = []
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "--spec":
-            spec_path = args[i + 1]; i += 2
-        elif a == "--panel":
-            panel_arg = args[i + 1]; i += 2
-        elif a == "--job":
-            job = args[i + 1]; i += 2
-        elif a == "--approve":
-            approve = args[i + 1]; i += 2
-        elif a == "--ack-review":
-            ack_review = args[i + 1]; i += 2
-        elif a in ("--prepped-by", "--prepped"):
-            prepped_by = args[i + 1]; i += 2
-        elif a in ("--qc-by", "--qc"):
-            qc_by = args[i + 1]; i += 2
-        elif a == "--version":
-            version = args[i + 1]; i += 2
-        elif a == "--fulfillment":
-            fulfillment = args[i + 1]; i += 2
-        elif a == "--book":
-            book = True; i += 1
-        elif a == "--allow-skips":
-            allow_skips = True; i += 1
-        else:
-            raw.append(a); i += 1
-    files = collect_files(raw)
-    if not files:
-        print('usage: python3 make_proof.py <artwork ...> [--spec ...] [--panel NAME] [--job "Name"]\n'
-              '       [--prepped-by "Name"] [--qc-by "Name"] [--version V]\n'
-              '       [--fulfillment delivery|pickup] [--approve "Client Name"]\n'
-              '       [--ack-review "reason"] [--allow-skips] [--book]')
-        return
-    spec = json.load(open(spec_path or proofer.find_default_spec()))
-    job = job or spec.get("job", {}).get("name", "Untitled job")
-    version = version or spec.get("job", {}).get("version")
-    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
-    base_meta = {"prepped_by": prepped_by, "qc_by": qc_by, "version": version,
-                 "fulfillment": fulfillment, "ack_review": ack_review}
+def main(argv=None):
+    # argparse (the old hand-rolled loop turned a typo'd flag into a "file",
+    # silently flipping to job mode and DROPPING --approve; a trailing flag
+    # raised IndexError). Unknown flags now exit 2 with usage.
+    ap = argparse.ArgumentParser(
+        prog="make_proof.py", allow_abbrev=False,
+        description="Build a branded client proof: one page per artwork item, "
+                    "checked against the booth spec. Several files (or a folder, "
+                    "or --book) build the whole-job document.")
+    ap.add_argument("artwork", nargs="+", help="artwork file(s) and/or folder(s)")
+    ap.add_argument("--spec", help="booth spec JSON (default: auto-discovered)")
+    ap.add_argument("--panel", help="panel name (single item; job mode matches by filename)")
+    ap.add_argument("--job", help="job name (default: from the spec)")
+    ap.add_argument("--approve", metavar="NAME",
+                    help="stamp APPROVED by NAME (single item; gated + logged)")
+    ap.add_argument("--ack-review", dest="ack_review", metavar="REASON",
+                    help="acknowledge a NEEDS-REVIEW verdict with a recorded reason")
+    ap.add_argument("--prepped-by", "--prepped", dest="prepped_by", metavar="NAME")
+    ap.add_argument("--qc-by", "--qc", dest="qc_by", metavar="NAME")
+    ap.add_argument("--version", dest="version", metavar="V",
+                    help="proof version (also suffixes the output name)")
+    ap.add_argument("--fulfillment", choices=("delivery", "pickup"))
+    ap.add_argument("--book", action="store_true",
+                    help="build the whole-job document even for a single file")
+    ap.add_argument("--allow-skips", dest="allow_skips", action="store_true",
+                    help="job mode: exit 0 even when files were skipped (still disclosed)")
+    a = ap.parse_args(argv)
 
-    if len(files) > 1 or book:
-        build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg,
-                        allow_skips=allow_skips)
+    files = collect_files(a.artwork)
+    if not files:
+        ap.error("no artwork files found in the given path(s)")
+    spec_path = a.spec or proofer.find_default_spec()
+    print(f"Spec: {spec_path}")
+    try:
+        with open(spec_path, encoding="utf-8") as f:
+            spec = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"could not read the booth spec {spec_path}: {e}", file=sys.stderr)
+        sys.exit(2)
+    job = a.job or spec.get("job", {}).get("name", "Untitled job")
+    version = a.version or spec.get("job", {}).get("version")
+    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
+    base_meta = {"prepped_by": a.prepped_by, "qc_by": a.qc_by, "version": version,
+                 "fulfillment": a.fulfillment, "ack_review": a.ack_review}
+
+    job_mode = len(files) > 1 or a.book
+    if job_mode and a.panel and len(files) != 1:
+        print("--panel names ONE panel, but job mode matches each file to a panel by "
+              "FILENAME. Run one file at a time with --panel, or drop --panel.",
+              file=sys.stderr)
+        sys.exit(2)
+    if job_mode:
+        rc = build_job_proof(files, spec, job, job_no, a.approve, base_meta, a.panel,
+                             allow_skips=a.allow_skips)
     else:
-        build_single_proof(files[0], spec, job, job_no, approve, base_meta, panel_arg)
+        rc = build_single_proof(files[0], spec, job, job_no, a.approve, base_meta, a.panel)
+    if rc:
+        sys.exit(rc)
+
+
+def safe_stem(name):
+    """Filename stem sanitized for output names. Keeps '-' and '.' so distinct
+    artworks stay distinct ('F 1.pdf' -> F_1, 'F-1.pdf' -> F-1 - the old
+    collapse-everything-to-_ made both write the SAME proof file)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("_") or "artwork"
+
+
+def _backup_existing(path):
+    """Rename an existing output aside with a timestamp instead of overwriting
+    it (an APPROVED proof is a signed record - never silently replaced).
+    Returns the backup path or None."""
+    if not os.path.exists(path):
+        return None
+    root, ext = os.path.splitext(path)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak = f"{root}_superseded_{ts}{ext}"
+    os.replace(path, bak)
+    print(f"note: existing {os.path.basename(path)} renamed to {os.path.basename(bak)} "
+          f"(an approved proof is never silently overwritten)")
+    return bak
 
 
 def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
+    """Returns an exit status: 0 success, 1 approval refusal, 2 unreadable/no
+    panel match (the refusal/error paths used to 'return' -> exit 0, so a
+    scripted approve-then-email flow treated a refusal as success)."""
     ext = os.path.splitext(fname)[1].lower()
     try:
         res = proofer.run_checks(fname, spec, panel_arg)
     except Exception as e:
-        print("could not read file:", e); return
+        print("could not read file:", e); return 2
     if res and res.get("error"):
-        print(res["error"]); sys.exit(2)
+        print(res["error"]); return 2
     if not res:
-        print("could not match to a panel — re-run with --panel NAME"); return
+        print("could not match to a panel — re-run with --panel NAME"); return 2
     panel = res["panel"]
     specs = panel_specs(panel, spec, base_meta.get("version"))
     placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
@@ -627,11 +662,11 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     if approve is not None and (is_blank(approve) or looks_placeholder(approve)):
         print(f'⛔ Refusing to stamp APPROVED: approver "{approve}" is blank or a placeholder — '
               f"--approve needs the real client approver's name.")
-        sys.exit(1)
+        return 1
     if approve:
         msg = _approval_block(res, placeholders, missing, os.path.basename(fname), ack_review)
         if msg:
-            print(msg); sys.exit(1)
+            print(msg); return 1
 
     status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
     if approve and ack_review:
@@ -646,7 +681,7 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
             print(f"⛔ Refusing to stamp APPROVED: the approval could not be logged {logged}.\n"
                   f"   Every approval must be recorded in {default_log_path()} (or its CSV "
                   f"fallback) — fix the log location/permissions and re-run.")
-            sys.exit(1)
+            return 1
 
     thumb = thumbnail(fname, ext)
     try:
@@ -655,11 +690,18 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     finally:
         _cleanup(thumb)
 
-    base = re.sub(r"[^A-Za-z0-9]+", "_", os.path.splitext(os.path.basename(fname))[0]).strip("_")
-    suffix = "_PROOF_APPROVED" if approve else "_PROOF"
+    base = safe_stem(os.path.splitext(os.path.basename(fname))[0])
+    ver = base_meta.get("version")
+    vtag = f"_v{safe_stem(ver)}" if ver else ""
+    suffix = f"_PROOF{vtag}" + ("_APPROVED" if approve else "")
     hp = os.path.abspath(base + suffix + ".html")
     pp = os.path.abspath(base + suffix + ".pdf")
-    open(hp, "w").write(page)
+    if approve:
+        # a previously APPROVED proof at this name is a signed record - keep it
+        _backup_existing(hp)
+        _backup_existing(pp)
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(page)
     ok = proofer.render_pdf(hp, pp)
     if not approve:
         # log AFTER the render so the row's Status reflects what actually exists
@@ -676,19 +718,25 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
               + "\n   - ".join(placeholders + [f"{m} not set" for m in missing]))
     print("Proof sheet:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
     print("Logged to  :", logged)
+    return 0
 
 
 def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, allow_skips=False):
+    """Returns an exit status: 0 success, 1 skipped files without --allow-skips,
+    2 nothing matched at all. `panel_arg` is honored only when exactly one file
+    was given (job mode otherwise matches by filename - main() rejects the
+    ambiguous combination up front)."""
     if approve:
         print("note: --approve is for a single item; the job document is a draft for per-item sign-off. Ignoring --approve.")
         approve = None
     panel_index = {p["name"]: i for i, p in enumerate(spec.get("panels", []))}
     job_placeholders = job_readiness(spec, job, base_meta.get("version"))
     items, unmatched = [], []
+    explicit_panel = panel_arg if len(files) == 1 else None
     for n, fname in enumerate(files):
         ext = os.path.splitext(fname)[1].lower()
         try:
-            res = proofer.run_checks(fname, spec, None)
+            res = proofer.run_checks(fname, spec, explicit_panel)
         except Exception as e:
             unmatched.append(f"{os.path.basename(fname)} (could not be read: {e})"); continue
         if res and res.get("error"):
@@ -710,7 +758,7 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
         print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel")
         if unmatched:
             print("  skipped:", ", ".join(unmatched))
-        sys.exit(2)
+        return 2
     items.sort(key=lambda it: panel_index.get(it["panel"]["name"], 999))
 
     try:
@@ -719,10 +767,13 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
         for it in items:
             _cleanup(it.get("_thumb"))
 
-    base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_") or "Job"
-    hp = os.path.abspath(base + "_JOB_PROOF.html")
-    pp = os.path.abspath(base + "_JOB_PROOF.pdf")
-    open(hp, "w").write(html_doc)
+    base = safe_stem(job)
+    ver = base_meta.get("version")
+    vtag = f"_v{safe_stem(ver)}" if ver else ""
+    hp = os.path.abspath(base + "_JOB_PROOF" + vtag + ".html")
+    pp = os.path.abspath(base + "_JOB_PROOF" + vtag + ".pdf")
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(html_doc)
     ok = proofer.render_pdf(hp, pp)
     # log AFTER the render so the rows' Status reflects what actually exists
     status = "PROOFED (job doc)" + ("" if ok else " — PDF render failed (HTML only)")
@@ -736,7 +787,8 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
     print(f"  {n_graphics} item(s), {n_pieces} piece(s) · {len(items) + 1} pages (cover + {len(items)})")
     for it in items:
         flag = "  ⚠ not client-ready" if (it["placeholders"] or it["missing"]) else ""
-        print(f"    - {it['panel']['name']:14} {it['res']['verdict']}{flag}")
+        how = it["res"].get("how", "?")
+        print(f"    - {it['panel']['name']:14} {it['res']['verdict']} [{how}]{flag}")
     if unmatched:
         print("  ⚠ NOT INCLUDED (disclosed on the proof cover):", ", ".join(unmatched))
     print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
@@ -745,7 +797,8 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, all
     if unmatched and not allow_skips:
         print(f"{len(unmatched)} file(s) could not be included — fix them, or re-run with "
               f"--allow-skips to accept the disclosed omission. Exiting nonzero.")
-        sys.exit(1)
+        return 1
+    return 0
 
 
 def _approval_block(res, placeholders, missing, fname, ack_review=None):

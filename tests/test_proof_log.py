@@ -122,7 +122,7 @@ def test_approval_with_locked_xlsx_stamps_via_csv_and_still_renders(tmp_path, mo
     mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
                           "Jane Client", dict(META), None)      # no SystemExit
     assert rendered, "render must still happen after the fallback log"
-    assert os.path.exists("F1_PROOF_APPROVED.html")
+    assert os.path.exists("F1_PROOF_vC1_APPROVED.html")   # P1-7: version in the name
     csv_text = open("proof_log_fallback.csv").read()
     assert "Jane Client" in csv_text
 

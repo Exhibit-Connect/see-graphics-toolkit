@@ -24,6 +24,7 @@ Usage:
         [--job "Name"] [--prepped-by "Name"] [--qc-by "Name"]
         [--version V] [--fulfillment delivery|pickup] [--approve "Client Name"]
         [--ack-review "reason"]   # required to approve a NEEDS-REVIEW proof; recorded
+                                  # (ignored — not stamped or logged — on any other verdict)
     # whole job (assembled document)
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
@@ -656,6 +657,18 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     if refusal:
         print(refusal); return 1
     ack_review = base_meta.get("ack_review")
+    if ack_review and res["verdict"] != "REVIEW":
+        # P0-8: an acknowledgment only applies to a NEEDS-REVIEW verdict. On
+        # any other verdict it is ignored ENTIRELY (never stamped on the proof
+        # or logged) — otherwise `--approve X --ack-review "TBD"` on a clean
+        # PASS would print a false "NEEDS-REVIEW items acknowledged" line on
+        # the client-facing proof and record it in the log. When the reason
+        # WILL be recorded (REVIEW verdict + --approve), approval_decision has
+        # already refused a blank/placeholder reason above.
+        print(f"note: --ack-review ignored — preflight verdict is {res['verdict']}, "
+              f"nothing was under review (the reason is not stamped on the proof or logged).")
+        ack_review = None
+        base_meta = dict(base_meta, ack_review=None)   # keep it off the rendered proof too
 
     status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
     if approve and ack_review:

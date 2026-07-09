@@ -284,3 +284,46 @@ def test_non_approve_review_proof_generation_unchanged(in_tmp, monkeypatch, caps
     assert _run(monkeypatch, res, None) == 0
     assert os.path.exists("F1_PROOF_vC1.html")
     assert "awaiting client sign-off" in capsys.readouterr().out
+
+
+def test_approve_pass_with_placeholder_ack_ignored_not_stamped_or_logged(in_tmp, monkeypatch, capsys):
+    # P0-8 corner: on a PASS verdict `--ack-review "TBD"` must be IGNORED —
+    # nothing was under review, so the client proof must not claim
+    # "NEEDS-REVIEW items acknowledged" and the log row stays plain APPROVED.
+    import openpyxl
+    assert _run(monkeypatch, canned_res(), "Jane Client", ack="TBD") == 0
+    doc = open("F1_PROOF_vC1_APPROVED.html", encoding="utf-8").read()
+    assert "APPROVED" in doc and "Jane Client" in doc
+    assert "NEEDS-REVIEW items acknowledged" not in doc and "TBD" not in doc
+    rows = list(openpyxl.load_workbook("proof_log.xlsx").active.iter_rows(values_only=True))
+    status_col = rows[0].index("Status")
+    statuses = [str(r[status_col]) for r in rows[1:]]
+    assert statuses and all("acknowledged" not in s and "TBD" not in s for s in statuses)
+    out = capsys.readouterr().out
+    assert "--ack-review ignored" in out              # console note, nowhere else
+
+
+def test_approve_pass_with_real_ack_reason_also_ignored(in_tmp, monkeypatch, capsys):
+    # even a perfectly good reason is ignored on a non-REVIEW verdict — there
+    # is nothing it could be acknowledging
+    assert _run(monkeypatch, canned_res(), "Jane Client",
+                ack="double-checked the fabric seam with the vendor") == 0
+    doc = open("F1_PROOF_vC1_APPROVED.html", encoding="utf-8").read()
+    assert "double-checked the fabric seam" not in doc
+    assert "--ack-review ignored" in capsys.readouterr().out
+
+
+def test_review_approve_with_ack_still_records_reason(in_tmp, monkeypatch, capsys):
+    # the REVIEW path is unchanged: a valid reason is stamped AND logged, and
+    # no "ignored" note prints
+    import openpyxl
+    res = canned_res("REVIEW", {"size": ("PASS", "ok"),
+                                "spelling": ("WARN", "1 word to review")})
+    assert _run(monkeypatch, res, "Jane Client", ack="reviewed spelling with client") == 0
+    doc = open("F1_PROOF_vC1_APPROVED.html", encoding="utf-8").read()
+    assert "NEEDS-REVIEW items acknowledged" in doc and "reviewed spelling with client" in doc
+    rows = list(openpyxl.load_workbook("proof_log.xlsx").active.iter_rows(values_only=True))
+    status_col = rows[0].index("Status")
+    assert any("REVIEW acknowledged: reviewed spelling with client" in str(r[status_col])
+               for r in rows[1:])
+    assert "--ack-review ignored" not in capsys.readouterr().out

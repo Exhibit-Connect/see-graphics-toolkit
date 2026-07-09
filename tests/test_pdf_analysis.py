@@ -346,3 +346,146 @@ def test_clean_cmyk_fixture_passes_all_checks(tmp_path):
     assert res["results"]["fonts"][0] == "PASS"
     assert res["verdict"] == "PASS"
     assert res["info"]["analysis_gaps"] == []
+
+
+# ---------- P2-4: resolve_cs / mat_mul units ----------
+def test_resolve_cs_iccbased_component_counts():
+    # ICC profiles carry no space NAME - the component count /N decides
+    assert proofer.resolve_cs(["/ICCBased", {"/N": 4}]) == "CMYK"
+    assert proofer.resolve_cs(["/ICCBased", {"/N": 3}]) == "RGB"
+    assert proofer.resolve_cs(["/ICCBased", {"/N": 1}]) == "Gray"
+
+
+def test_resolve_cs_device_and_special_spaces():
+    assert proofer.resolve_cs("/DeviceCMYK") == "CMYK"
+    assert proofer.resolve_cs("/DeviceRGB") == "RGB"
+    assert proofer.resolve_cs("/DeviceGray") == "Gray"
+    assert proofer.resolve_cs(["/Separation", "/PANTONE 185 C"]) == "Spot/Separation"
+    assert proofer.resolve_cs("/SomeExoticSpace") == "Unknown"
+
+
+def test_mat_mul_identity_translation_and_scale_compose():
+    ident = [1, 0, 0, 1, 0, 0]
+    m = [2, 0, 0, 3, 10, 20]
+    assert proofer.mat_mul(m, ident) == m
+    assert proofer.mat_mul(ident, m) == m
+    # scale placed inside a translated space: offsets add, scale kept
+    assert proofer.mat_mul([2, 0, 0, 2, 0, 0], [1, 0, 0, 1, 5, 7]) == [2, 0, 0, 2, 5, 7]
+
+
+def test_mat_mul_rotation_composes():
+    rot90 = [0, 1, -1, 0, 0, 0]
+    assert proofer.mat_mul(rot90, [1, 0, 0, 1, 5, 7]) == [0, 1, -1, 0, 5, 7]
+
+
+def test_image_placements_rotated_placement_keeps_true_dims():
+    # 90deg-rotated placement: column norms give the real placed size
+    placed = proofer.image_placements("q 0 720 -720 0 720 0 cm /Im1 Do Q", {"Im1"})
+    assert placed == {"Im1": (720.0, 720.0)}
+
+
+def test_image_placements_nested_q_restores_ctm():
+    content = "q 2 0 0 2 0 0 cm q 360 0 0 360 0 0 cm /Im1 Do Q /Im2 Do Q"
+    placed = proofer.image_placements(content, {"Im1", "Im2"})
+    assert placed["Im1"] == (720.0, 720.0)   # inner scale times outer 2x
+    assert placed["Im2"] == (2.0, 2.0)       # Q restored the outer CTM
+
+
+# ---------- P2-4: Pillow-built fixtures (real writer streams) ----------
+# A smaller booth than SPEC so the Pillow bitmaps stay tiny.
+PILLOW_SPEC = {
+    "settings": {"bleed_per_side_in": 1.0, "scale": 0.5},
+    "panels": [{"name": "Wall A", "w": 10, "h": 20}],
+}
+
+
+def pillow_pdf(tmp_path, name, mode, px, dpi, color):
+    from PIL import Image
+    p = tmp_path / name
+    Image.new(mode, px, color).save(str(p), resolution=dpi)
+    return str(p)
+
+
+def test_pillow_rgb_pdf_fails_color_and_grades_ppi(tmp_path):
+    # 1440x2640 at 120 dpi = 12x22in = full + bleed
+    p = pillow_pdf(tmp_path, "rgb.pdf", "RGB", (1440, 2640), 120, (200, 10, 10))
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    assert res["results"]["color"][0] == "FAIL"
+    assert res["info"]["images"][0]["ppi"] == 120
+    assert res["info"]["analysis_gaps"] == []
+    assert res["verdict"] == "FAIL"
+
+
+def test_pillow_cmyk_pdf_passes_all_checks(tmp_path):
+    p = pillow_pdf(tmp_path, "cmyk.pdf", "CMYK", (1440, 2640), 120, (0, 255, 255, 0))
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    assert res["results"]["color"] == ("PASS", "CMYK")
+    assert res["results"]["resolution"][0] == "PASS"
+    assert res["verdict"] == "PASS"
+
+
+def test_pillow_low_res_half_scale_pdf_fails_resolution(tmp_path):
+    # 360x660 at 60 dpi = 6x11in = half + bleed; the half-scale floor (120)
+    # is never relaxed, so 60 ppi FAILs
+    p = pillow_pdf(tmp_path, "low.pdf", "CMYK", (360, 660), 60, (0, 255, 255, 0))
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    st, msg = res["results"]["resolution"]
+    assert st == "FAIL" and "60" in msg
+
+
+def test_pillow_half_trim_no_bleed_warns_with_scaled_instruction(tmp_path):
+    # 600x1200 at 120 dpi = 5x10in = bare half trim, no TrimBox
+    p = pillow_pdf(tmp_path, "half.pdf", "CMYK", (600, 1200), 120, (0, 255, 255, 0))
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    st, msg = res["results"]["size"]
+    assert st == "WARN" and "no bleed detected" in msg
+    assert 'add 0.5" bleed per side' in msg              # scaled, not the full 1"
+    assert res["verdict"] == "REVIEW"
+
+
+def test_pillow_rotated_landscape_file_still_matches(tmp_path):
+    # 2640x1440 at 120 dpi = 22x12in: the rotated full+bleed candidate
+    p = pillow_pdf(tmp_path, "rot.pdf", "CMYK", (2640, 1440), 120, (0, 255, 255, 0))
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    st, msg = res["results"]["size"]
+    assert st == "PASS" and "rotated" in msg
+
+
+def _set_trimbox(src, dst, inset_pt):
+    """pypdf post-edit: give a Pillow PDF a TrimBox inset by `inset_pt`."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import RectangleObject
+    w = PdfWriter()
+    w.append(PdfReader(src))
+    pg = w.pages[0]
+    mb = pg.mediabox
+    pg.trimbox = RectangleObject([inset_pt, inset_pt,
+                                  float(mb.width) - inset_pt,
+                                  float(mb.height) - inset_pt])
+    with open(dst, "wb") as f:
+        w.write(f)
+    return str(dst)
+
+
+def test_pillow_pypdf_trimbox_marks_margin_warns(tmp_path):
+    # media 12.8x22.8in, TrimBox inset 1.4in -> trim 10x20 (full trim match).
+    # Bleed is present (size PASS) but the 1.4in margin exceeds the expected
+    # 1.0in bleed -> crop/registration marks are probably included -> WARN.
+    src = pillow_pdf(tmp_path, "marks_src.pdf", "CMYK", (1536, 2736), 120, (0, 255, 255, 0))
+    p = _set_trimbox(src, tmp_path / "marks.pdf", 1.4 * 72)
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    st, msg = res["results"]["marks"]
+    assert st == "WARN" and "crop/registration marks" in msg
+
+
+def test_pillow_pypdf_trimbox_exact_bleed_margin_passes(tmp_path):
+    # media 12x22in, TrimBox inset exactly the 1.0in bleed -> PASS both
+    src = pillow_pdf(tmp_path, "bleed_src.pdf", "CMYK", (1440, 2640), 120, (0, 255, 255, 0))
+    p = _set_trimbox(src, tmp_path / "bleed.pdf", 72)
+    res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    assert res["results"]["marks"][0] == "PASS"

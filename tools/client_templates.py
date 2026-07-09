@@ -35,21 +35,25 @@ def re_safe(s):
 
 
 # ---------- pure helpers ----------
+def is_oversized(panel, settings):
+    """True when THIS panel is too big for a single Illustrator artboard at
+    build scale (mirrors the .jsx MAX_AB_PT check). Identity-safe: callers
+    classify each panel OBJECT with this predicate - the old name-keyed set
+    misclassified panels with duplicate names as tile/seam. Pure."""
+    bleed = settings.get("bleed_per_side_in", 1.0)
+    scale = settings.get("scale", 0.5)
+    bw = (panel.get("w", 0) + 2 * bleed) * scale
+    bh = (panel.get("h", 0) + 2 * bleed) * scale
+    return bw > MAX_BUILD_IN or bh > MAX_BUILD_IN
+
+
 def oversized_panels(spec):
     """Panels too big for a single Illustrator artboard at build scale — the
     .jsx skips these to tile/seam separately, and so do we (the page shows a
     notice instead of an artboard). Returns the list of oversized panel dicts.
-    Pure (mirrors the .jsx MAX_AB_PT check)."""
+    Pure (implemented via the per-panel is_oversized predicate)."""
     st = spec.get("settings", {})
-    bleed = st.get("bleed_per_side_in", 1.0)
-    scale = st.get("scale", 0.5)
-    out = []
-    for p in spec.get("panels", []):
-        bw = (p.get("w", 0) + 2 * bleed) * scale
-        bh = (p.get("h", 0) + 2 * bleed) * scale
-        if bw > MAX_BUILD_IN or bh > MAX_BUILD_IN:
-            out.append(p)
-    return out
+    return [p for p in spec.get("panels", []) if is_oversized(p, st)]
 
 
 def is_continuous(panel):
@@ -172,7 +176,8 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
     </section>"""
 
 
-def _cover_page(spec, panels, over_names, pages):
+def _cover_page(spec, panels, pages):
+    st = spec.get("settings", {})
     j = spec.get("job", {}) or {}
     fields = [("Client", j.get("client")), ("Show", j.get("show")), ("Booth", j.get("booth_size")),
               ("Job #", j.get("job_number") or j.get("estimate")), ("Version", j.get("version")),
@@ -187,7 +192,7 @@ def _cover_page(spec, panels, over_names, pages):
         # wall printed in one continuous run is marked — not only the artboard-oversized one.
         if is_continuous(p):
             tag = ' <span class="ov">one piece</span>'
-        elif p.get("name") in over_names:
+        elif is_oversized(p, st):
             tag = ' <span class="ov">tile/seam</span>'
         else:
             tag = ""
@@ -252,19 +257,19 @@ FOOT = '</body></html>'
 
 def build_templates_html(spec):
     """The whole client-template document: a cover + one page per panel."""
+    st = spec.get("settings", {})
     panels = spec.get("panels", [])
-    over = {p.get("name") for p in oversized_panels(spec)}
     pages = len(panels) + 1
-    parts = [HEAD, _cover_page(spec, panels, over, pages)]
+    parts = [HEAD, _cover_page(spec, panels, pages)]
     for i, p in enumerate(panels):
-        parts.append(panel_page_html(p, spec, i + 2, pages, oversized=(p.get("name") in over)))
+        parts.append(panel_page_html(p, spec, i + 2, pages, oversized=is_oversized(p, st)))
     parts.append(FOOT)
     return "".join(parts)
 
 
 def single_panel_doc(spec, panel):
-    over = {p.get("name") for p in oversized_panels(spec)}
-    return HEAD + panel_page_html(panel, spec, 1, 1, oversized=(panel.get("name") in over)) + FOOT
+    st = spec.get("settings", {})
+    return HEAD + panel_page_html(panel, spec, 1, 1, oversized=is_oversized(panel, st)) + FOOT
 
 
 def main():
@@ -291,25 +296,47 @@ def main():
             msg += f"  ·  oversized (one piece, doors marked): {', '.join(cont)}"
     print(msg)
     print("HTML:", hp)
+    # Chrome-missing (legitimate open-the-HTML fallback, exit 0) and
+    # Chrome-present-but-render-FAILED (exit 1) are different outcomes -
+    # 'PDF step skipped' used to cover both, and main always exited 0.
+    chrome_present = os.path.exists(render.CHROME)
+    exit_code = 0
     if render.html_to_pdf(hp, pp):
         print("PDF :", pp, f"({os.path.getsize(pp)} bytes)")
+    elif not chrome_present:
+        print("PDF step skipped (Chrome not installed) — open the HTML and Print -> Save as PDF.")
     else:
-        print("PDF step skipped — open the HTML and Print -> Save as PDF.")
+        print(f"PDF render FAILED for {pp} — open the HTML and Print -> Save as PDF.")
+        exit_code = 1
 
     if per_panel:
-        made = 0
-        for p in panels:
+        made, failed, used = 0, [], set()
+        for i, p in enumerate(panels, 1):
             stem = f"{base}_{re_safe(p.get('name', 'panel'))}_template"
+            if stem in used:
+                # 'Wall-1' and 'Wall 1' share a sanitized stem - the later PDF
+                # silently overwrote the earlier one; disambiguate by index
+                stem = f"{base}_{re_safe(p.get('name', 'panel'))}_{i}_template"
+            used.add(stem)
             ph = os.path.abspath(stem + ".html")
             pdf = os.path.abspath(stem + ".pdf")
-            open(ph, "w").write(single_panel_doc(spec, p))
+            open(ph, "w", encoding="utf-8").write(single_panel_doc(spec, p))
             if render.html_to_pdf(ph, pdf):
                 made += 1
-            try:
-                os.remove(ph)
-            except OSError:
-                pass
+                try:
+                    os.remove(ph)
+                except OSError:
+                    pass
+            else:
+                # keep the HTML so the panel can still be printed manually
+                failed.append(str(p.get("name", "panel")))
         print(f"per-panel PDFs: {made} of {len(panels)}")
+        if failed:
+            print(f"per-panel FAILED (HTML kept for manual print): {', '.join(failed)}")
+            if chrome_present:
+                exit_code = 1
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

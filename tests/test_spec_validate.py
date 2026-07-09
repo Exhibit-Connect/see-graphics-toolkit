@@ -141,7 +141,7 @@ def test_script_in_w_never_reaches_output_unescaped(tmp_path, monkeypatch, capsy
         gsp.main()
     # rejected before render; and nothing on disk carries the raw tag
     for f in tmp_path.glob("*.html"):
-        assert "<script>" not in f.read_text()
+        assert "<script>" not in f.read_text(encoding="utf-8")
     err = capsys.readouterr().err
     assert "&lt;script&gt;" in err or "<script>" in err  # named in the error is fine
 

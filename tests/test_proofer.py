@@ -395,7 +395,7 @@ def test_batch_crashing_file_does_not_abort_and_review_report_written(tmp_path, 
     assert "REVIEW" in out
     report = tmp_path / "wall_a_art_preflight.html"
     assert report.exists(), "the good file's report must still be produced"
-    assert "NEEDS REVIEW" in report.read_text()
+    assert "NEEDS REVIEW" in report.read_text(encoding="utf-8")
 
 
 # ---------- fix-it instructions (Feature 3) ----------

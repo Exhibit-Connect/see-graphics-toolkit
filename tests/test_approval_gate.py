@@ -230,7 +230,7 @@ def test_approve_openpyxl_missing_lands_in_csv_fallback(in_tmp, monkeypatch, cap
     monkeypatch.setattr(mp, "openpyxl", None)
     assert _run(monkeypatch, canned_res(), "Jane Client") == 0
     assert os.path.exists("F1_PROOF_vC1_APPROVED.html")
-    csv_text = open("proof_log_fallback.csv").read()
+    csv_text = open("proof_log_fallback.csv", encoding="utf-8").read()
     assert "Jane Client" in csv_text and "F1" in csv_text
     assert "proof_log_fallback.csv" in capsys.readouterr().out
 
@@ -261,7 +261,7 @@ def test_approve_with_ack_records_reason_in_html_and_log(in_tmp, monkeypatch, ca
     res = canned_res("REVIEW", {"size": ("PASS", "ok"),
                                 "spelling": ("WARN", "1 word to review")})
     assert _run(monkeypatch, res, "Jane Client", ack="checked manually with the client") == 0
-    doc = open("F1_PROOF_vC1_APPROVED.html").read()
+    doc = open("F1_PROOF_vC1_APPROVED.html", encoding="utf-8").read()
     assert "APPROVED" in doc and "Jane Client" in doc
     assert "checked manually with the client" in doc      # reason on the proof
     rows = list(openpyxl.load_workbook("proof_log.xlsx").active.iter_rows(values_only=True))

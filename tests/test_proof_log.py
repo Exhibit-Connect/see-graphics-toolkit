@@ -64,7 +64,7 @@ def test_rows_round_trip_into_dashboard(tmp_path, monkeypatch):
 def test_interleaved_writes_block_on_the_lock_and_both_persist(tmp_path, monkeypatch):
     log = tmp_path / "proof_log.xlsx"
     monkeypatch.setenv("SEE_PROOF_LOG", str(log))
-    holder = open(str(log) + ".lock", "w")
+    holder = open(str(log) + ".lock", "w", encoding="utf-8")
     fcntl.flock(holder, fcntl.LOCK_EX)                  # simulate a concurrent run
     done = []
     t = threading.Thread(target=lambda: done.append(_log_row(panel="F1")))
@@ -86,7 +86,7 @@ def test_openpyxl_missing_row_lands_in_csv_and_note_names_it(tmp_path, monkeypat
     monkeypatch.setattr(mp, "openpyxl", None)
     logged = _log_row(approver="Jane Client")
     assert "proof_log_fallback.csv" in logged and "openpyxl missing" in logged
-    rows = list(csv.reader(open(tmp_path / "proof_log_fallback.csv")))
+    rows = list(csv.reader(open(tmp_path / "proof_log_fallback.csv", encoding="utf-8", newline="")))
     assert rows[0] == mp.LOG_HEADER
     assert rows[1][mp.LOG_HEADER.index("Panel / Item")] == "F1"
     assert rows[1][mp.LOG_HEADER.index("Approved by")] == "Jane Client"
@@ -123,7 +123,7 @@ def test_approval_with_locked_xlsx_stamps_via_csv_and_still_renders(tmp_path, mo
                           "Jane Client", dict(META), None)      # no SystemExit
     assert rendered, "render must still happen after the fallback log"
     assert os.path.exists("F1_PROOF_vC1_APPROVED.html")   # P1-7: version in the name
-    csv_text = open("proof_log_fallback.csv").read()
+    csv_text = open("proof_log_fallback.csv", encoding="utf-8").read()
     assert "Jane Client" in csv_text
 
 

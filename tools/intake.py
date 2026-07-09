@@ -332,7 +332,7 @@ def ai_enrich(path, n_pages, det_panels, max_pages=None):
             # json_mode=True mirrors the live ask_json call below - the dry-run
             # is documented as "the exact request", so it must carry response_format
             payload = ai_client._redacted_payload(prompt, imgs, json_mode=True)
-            with open("_intake_ai_dryrun.json", "w") as f:
+            with open("_intake_ai_dryrun.json", "w", encoding="utf-8") as f:
                 f.write(json.dumps(payload, indent=2))
             return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
                     "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
@@ -646,9 +646,9 @@ def main(argv=None):
                                   {"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
                     "notes": extras, "warnings": warnings, "ai": ai},
     }
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         json.dump(spec, f, indent=2)
-    with open(review, "w") as f:
+    with open(review, "w", encoding="utf-8") as f:
         f.write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
                              panel_source, undimensioned, warnings))
 

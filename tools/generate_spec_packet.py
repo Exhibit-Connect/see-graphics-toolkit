@@ -576,7 +576,8 @@ def main():
         sys.exit(2)
     files = [a for a in args if not a.startswith("--")]
     spec_path = files[0] if files else find_default_spec()
-    spec = json.load(open(spec_path))
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
     spec["__source"] = os.path.basename(spec_path)
     base_dir = os.path.dirname(os.path.abspath(spec_path))
     def _uri(p):
@@ -611,7 +612,8 @@ def main():
         doc = build_html(spec, final=final)   # build BEFORE opening: an invalid
     except spec_validate.SpecError as e:      # spec must leave NO partial file
         spec_validate.report_and_exit(e)
-    open(html_path, "w").write(doc)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(doc)   # flushed/closed before Chrome reads it via file://
     print("HTML:", html_path)
     if draft:
         print("⚠  DRAFT packet — not for the client yet. Unresolved: " + "; ".join(reasons)

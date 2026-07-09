@@ -130,7 +130,7 @@ def test_job_proof_with_unreadable_file_exits_nonzero(tmp_path, monkeypatch, cap
     assert rc == 1                                     # P1-7: skip -> status 1
     out = capsys.readouterr().out
     assert "NOT INCLUDED" in out and "--allow-skips" in out
-    doc = open("Booth_Build_JOB_PROOF.html").read()   # document still produced
+    doc = open("Booth_Build_JOB_PROOF.html", encoding="utf-8").read()   # document still produced
     assert "NOT INCLUDED in this proof" in doc and "bad.pdf" in doc
     assert "unreadable artwork" in doc                 # per-file reason disclosed
 
@@ -156,7 +156,7 @@ def test_job_proof_clean_run_has_no_skip_block_or_exit(tmp_path, monkeypatch, ca
                         lambda *a, **k: _canned_job_res())
     mp.build_job_proof(["F1.pdf", "F1_b.pdf"], JOB_SPEC, "Booth Build", "1001",
                        None, {}, None)
-    assert "NOT INCLUDED" not in open("Booth_Build_JOB_PROOF.html").read()
+    assert "NOT INCLUDED" not in open("Booth_Build_JOB_PROOF.html", encoding="utf-8").read()
 
 
 def test_job_proof_all_files_skipped_exits_nonzero(tmp_path, monkeypatch, capsys):
@@ -406,6 +406,6 @@ def test_approved_proof_overwrite_leaves_timestamped_backup(tmp_path, monkeypatc
     assert rc == 0
     backups = [p for p in os.listdir(tmp_path) if "superseded" in p and p.endswith(".html")]
     assert len(backups) == 1
-    assert open(backups[0]).read() == "the previously signed proof"
+    assert open(backups[0], encoding="utf-8").read() == "the previously signed proof"
     assert "never silently overwritten" in capsys.readouterr().out
-    assert "the previously signed proof" not in open("F1_PROOF_APPROVED.html").read()
+    assert "the previously signed proof" not in open("F1_PROOF_APPROVED.html", encoding="utf-8").read()

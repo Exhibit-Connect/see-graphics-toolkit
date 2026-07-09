@@ -189,7 +189,7 @@ def test_per_panel_stem_collision_gets_index(tmp_path, monkeypatch):
 
     def fake_pdf(hp, pp):
         rendered.append(os.path.basename(pp))
-        open(pp, "w").write("pdf")
+        open(pp, "w", encoding="utf-8").write("pdf")
         return True
 
     monkeypatch.setattr(ct.render, "html_to_pdf", fake_pdf)
@@ -208,7 +208,7 @@ def test_per_panel_failed_render_keeps_html_and_names_panel(tmp_path, monkeypatc
     def fake_pdf(hp, pp):
         if "Bad" in hp:
             return False
-        open(pp, "w").write("pdf")
+        open(pp, "w", encoding="utf-8").write("pdf")
         return True
 
     monkeypatch.setattr(ct.render, "html_to_pdf", fake_pdf)

@@ -73,7 +73,7 @@ class _FileLock:
         self.f = None
 
     def __enter__(self):
-        self.f = open(self.path, "a")
+        self.f = open(self.path, "a", encoding="utf-8")
         deadline = time.time() + self.timeout
         while True:
             try:

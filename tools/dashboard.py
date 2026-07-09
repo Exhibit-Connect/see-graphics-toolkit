@@ -206,7 +206,8 @@ def discover_specs(jobs_dir=None):
             continue
         seen.add(rp)
         try:
-            spec = json.load(open(p))
+            with open(p, encoding="utf-8-sig") as f:
+                spec = json.load(f)
             if not isinstance(spec, dict):
                 raise ValueError(f"top-level JSON is a {type(spec).__name__}, expected an object")
             spec["__source"] = os.path.basename(p)
@@ -405,7 +406,8 @@ def main():
     rows = dashboard_rows(specs, log_index, today)
 
     hp = os.path.abspath("job_dashboard.html")
-    open(hp, "w").write(build_dashboard_html(rows, today, log_note="; ".join(log_warnings) or None))
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(build_dashboard_html(rows, today, log_note="; ".join(log_warnings) or None))
     print(f"jobs: {len(rows)}  ·  at risk: {sum(1 for r in rows if r['flags'])}")
     for r in rows:
         flag = ("  ⚠ " + "; ".join(r["flags"])) if r["flags"] else ""

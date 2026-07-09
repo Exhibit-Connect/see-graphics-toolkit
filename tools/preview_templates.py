@@ -295,7 +295,8 @@ def main():
         else:
             files.append(args[i]); i += 1
     spec_path = files[0] if files else find_default_spec()
-    spec = json.load(open(spec_path))
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
     if not out_base:
         # derive from the spec filename so two booths' previews never
         # overwrite each other's fixed 'templates_preview.svg/png'
@@ -308,7 +309,8 @@ def main():
         svg, n = build_svg(spec)
     except spec_validate.SpecError as e:
         spec_validate.report_and_exit(e)   # one line per problem, exit 2, nothing written
-    open(svg_path, "w").write(svg)
+    with open(svg_path, "w", encoding="utf-8") as f:
+        f.write(svg)   # flushed/closed before Chrome reads it via file://
     print(f"panels previewed: {n}")
     print("SVG:", svg_path)
     status = render_png(svg_path, png_path)

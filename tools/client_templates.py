@@ -279,7 +279,8 @@ def main():
     per_panel = "--per-panel" in args
     files = [a for a in args if not a.startswith("--")]
     spec_path = files[0] if files else find_default_spec()
-    spec = json.load(open(spec_path))
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
     try:
         spec_validate.validate_or_raise(spec)   # before ANY output is written
     except spec_validate.SpecError as e:
@@ -292,7 +293,8 @@ def main():
     hp = os.path.abspath(f"{base}_Client_Templates.html")
     pp = os.path.abspath(f"{base}_Client_Templates.pdf")
     doc = build_templates_html(spec)   # build BEFORE opening: no truncated file on error
-    open(hp, "w").write(doc)
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(doc)   # flushed/closed before Chrome reads it via file://
     msg = f"panels: {len(panels)}"
     if over:
         seam = [str(p.get("name")) for p in over if not is_continuous(p)]

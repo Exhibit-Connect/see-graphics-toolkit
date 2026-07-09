@@ -317,7 +317,7 @@ def test_main_final_overrides_draft_when_verified(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(sys, "argv", ["generate_spec_packet.py", str(p), "--final"])
     gsp.main()
     assert (tmp_path / "test_Spec_Packet.html").exists()         # no _DRAFT suffix
-    assert "DRAFT — NOT FOR CLIENT" not in (tmp_path / "test_Spec_Packet.html").read_text()
+    assert "DRAFT — NOT FOR CLIENT" not in (tmp_path / "test_Spec_Packet.html").read_text(encoding="utf-8")
 
 
 def test_official_brand_pages_present_or_cleanly_absent():

@@ -940,7 +940,8 @@ def main():
     if not files:
         print("usage: python3 proofer.py <artwork file> [--spec booth_spec.json] [--panel NAME]")
         return
-    spec = json.load(open(spec_path or find_default_spec()))
+    with open(spec_path or find_default_spec(), encoding="utf-8-sig") as f:
+        spec = json.load(f)
 
     had_match_error = False
     for fname in files:
@@ -974,14 +975,17 @@ def main():
                     print(f"    - {g}")
 
             base = os.path.splitext(os.path.basename(fname))[0]
-            json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
-                       "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
-                       "fixes": fixes or [], "analysis_gaps": gaps},
-                      open(f"{base}_preflight.json", "w"), indent=2)
+            with open(f"{base}_preflight.json", "w", encoding="utf-8") as jf:
+                json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
+                           "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
+                           "fixes": fixes or [], "analysis_gaps": gaps},
+                          jf, indent=2)
             preview = marked_preview(fname, info, spec, panel, fixes)
             hp = os.path.abspath(f"{base}_preflight.html")
-            open(hp, "w").write(build_report_html(fname, panel["name"], how, results, verdict,
-                                fixes=fixes, preview_b64=preview, gaps=gaps))
+            with open(hp, "w", encoding="utf-8") as hf:
+                # flushed/closed before Chrome reads it via file://
+                hf.write(build_report_html(fname, panel["name"], how, results, verdict,
+                                           fixes=fixes, preview_b64=preview, gaps=gaps))
             if render_pdf(hp, os.path.abspath(f"{base}_preflight.pdf")):
                 print(f"  report: {base}_preflight.pdf")
             else:

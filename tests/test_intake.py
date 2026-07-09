@@ -206,10 +206,10 @@ def test_main_ocr_conflicts_reach_the_review(monkeypatch, tmp_path):
                         lambda *a, **k: ('C 10"w x 20"h\nC 12"w x 20"h\n', []))
     monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "OCR Job"])
     intake.main()
-    spec = json.load(open("booth_spec_OCR_Job_DRAFT.json"))
+    spec = json.load(open("booth_spec_OCR_Job_DRAFT.json", encoding="utf-8-sig"))
     assert [p["name"] for p in spec["panels"]] == ["C"]
     assert spec["_intake"]["conflicts"] == [{"name": "C", "a": [10.0, 20.0], "b": [12.0, 20.0]}]
-    review = open("OCR_Job_intake_review.md").read()
+    review = open("OCR_Job_intake_review.md", encoding="utf-8").read()
     assert "Dimension conflicts" in review and "10.0x20.0 vs 12.0x20.0" in review
 
 
@@ -356,7 +356,7 @@ def test_draft_spec_includes_tbd_job_number_and_pending_entry(monkeypatch, tmp_p
     monkeypatch.setattr(intake, "ocr_pages", lambda *a, **k: ("", []))
     monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Num Job"])
     intake.main()
-    spec = json.load(open("booth_spec_Num_Job_DRAFT.json"))
+    spec = json.load(open("booth_spec_Num_Job_DRAFT.json", encoding="utf-8-sig"))
     assert spec["job"]["job_number"] == "TBD"
     assert any("job number" in p for p in spec["pending_inputs"])
 
@@ -368,9 +368,9 @@ def test_main_surfaces_tool_warnings_in_review_and_spec(monkeypatch, tmp_path, c
                         lambda *a, **k: ("", ["page 1: Ghostscript render failed (rc 1): boom"]))
     monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Warn Job"])
     intake.main()
-    spec = json.load(open("booth_spec_Warn_Job_DRAFT.json"))
+    spec = json.load(open("booth_spec_Warn_Job_DRAFT.json", encoding="utf-8-sig"))
     assert spec["_intake"]["warnings"] == ["page 1: Ghostscript render failed (rc 1): boom"]
-    review = open("Warn_Job_intake_review.md").read()
+    review = open("Warn_Job_intake_review.md", encoding="utf-8").read()
     assert "### Tool warnings" in review and "boom" in review
     assert "tool warning" in capsys.readouterr().out
 
@@ -410,7 +410,7 @@ def test_rerun_refuses_to_overwrite_hand_edited_draft(monkeypatch, tmp_path, cap
         intake.main()
     assert ei.value.code == 1
     assert "--force" in capsys.readouterr().out
-    assert draft.read_text() == '{"hand": "edited"}'     # edit survived
+    assert draft.read_text(encoding="utf-8") == '{"hand": "edited"}'     # edit survived
 
 
 def test_force_overwrites_existing_outputs(monkeypatch, tmp_path):
@@ -424,7 +424,7 @@ def test_force_overwrites_existing_outputs(monkeypatch, tmp_path):
     monkeypatch.setattr(intake.sys, "argv",
                         ["intake.py", "deck.pdf", "--job", "Guard Job", "--force"])
     intake.main()                                        # no SystemExit
-    assert json.loads(draft.read_text()).get("_about")   # regenerated draft
+    assert json.loads(draft.read_text(encoding="utf-8")).get("_about")   # regenerated draft
 
 
 def test_trailing_flag_without_value_exits_2_with_usage(monkeypatch, tmp_path, capsys):

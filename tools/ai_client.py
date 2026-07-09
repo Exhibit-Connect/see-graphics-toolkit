@@ -56,7 +56,7 @@ def _load_key():
         _cwd_notice_shown = True
     for path in candidates:
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 v = f.read().strip()
             if v:
                 return v, path

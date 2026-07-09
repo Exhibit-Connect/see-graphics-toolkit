@@ -1,0 +1,103 @@
+# P2-8: two-tier CI (see the hardening plan, Section 5).
+#
+# tier1  - pure Python: everything that matters for print correctness runs with
+#          no system binaries at all (PDF-analysis fixtures, approval gate,
+#          proof-log round-trip, goldens, drift tests, ai_client with a faked
+#          opener). This is the REQUIRED job.
+# tier2  - installs Chrome/Ghostscript/tesseract and runs the external-marked
+#          smoke tests (real html_to_pdf, gs rasterization, real-dict spelling,
+#          OCR), then generates the example-booth artifacts for visual
+#          spot-checks and the review gate's before/after comparison.
+# jsx    - node --check syntax gate on the Illustrator generator.
+#
+# Anything touching Illustrator itself stays manual on macOS (the CLAUDE.md
+# smoke checklist); those tests carry the `illustrator` marker and never run here.
+name: CI
+
+on:
+  push:
+    branches: [main, hardening-plan]
+  pull_request:
+
+jobs:
+  tier1:
+    name: tier-1 tests (py${{ matrix.python-version }}, no system deps)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Python dependencies (the ONLY install tier 1 gets)
+        run: pip install -r requirements-dev.txt
+      - name: Run tier-1 suite
+        run: pytest -m "not external and not illustrator"
+
+  jsx-syntax:
+    name: .jsx syntax gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: node --check the Illustrator generator
+        # node refuses the .jsx extension; check a .js copy of the same bytes
+        # (mirrors tests/test_jsx_guards.py, which skips when node is absent)
+        run: |
+          cp tools/SEE_Wall_Template_Generator.jsx "${RUNNER_TEMP}/generator_check.js"
+          node --check "${RUNNER_TEMP}/generator_check.js"
+
+  tier2:
+    name: tier-2 tests + example artifacts (Chrome/gs/tesseract)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ghostscript tesseract-ocr wamerican chromium-browser \
+            || sudo apt-get install -y ghostscript tesseract-ocr wamerican chromium
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Resolve Chrome for the suite
+        # Prefer the apt/snap chromium the plan installs; fall back to the
+        # runner's preinstalled google-chrome (on some ubuntu-latest images
+        # 'chromium-browser' is a snap shim that can fail headless).
+        run: |
+          SEE_CHROME="$(command -v chromium-browser || command -v chromium || command -v google-chrome)"
+          test -n "$SEE_CHROME"
+          echo "resolved Chrome: $SEE_CHROME"
+          echo "SEE_CHROME=$SEE_CHROME" >> "$GITHUB_ENV"
+      - name: Run tier-2 (external-marked) tests
+        run: pytest -m external
+      - name: Generate example artifacts (spec packet, preview, sample proof)
+        run: |
+          mkdir -p ci-artifacts
+          export SEE_PROOF_LOG="$PWD/ci-artifacts/proof_log.xlsx"
+          # template preview (SVG always; PNG via the resolved Chrome)
+          python tools/preview_templates.py examples/1_booth_spec_example.json --out ci-artifacts/example_preview
+          # client-facing spec packet (HTML + PDF; the example spec is a
+          # DRAFT — TBD finishes — so outputs carry the _DRAFT suffix)
+          python tools/generate_spec_packet.py examples/1_booth_spec_example.json
+          # a sample proof: synthetic CMYK artwork sized to panel A (full + bleed)
+          python - <<'PY'
+          from PIL import Image
+          im = Image.new("CMYK", (int(80.12 * 30), int(175.32 * 30)), (20, 40, 60, 10))
+          im.save("wall_a_art.pdf", resolution=30.0)
+          PY
+          python tools/make_proof.py wall_a_art.pdf --spec examples/1_booth_spec_example.json --panel A
+          mv ./*_Spec_Packet*.html ci-artifacts/
+          mv ./*_Spec_Packet*.pdf ci-artifacts/ 2>/dev/null || echo "spec packet PDF not produced"
+          mv ./*_PROOF*.html ci-artifacts/
+          mv ./*_PROOF*.pdf ci-artifacts/ 2>/dev/null || echo "proof PDF not produced"
+      - name: Upload example artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: example-artifacts
+          path: ci-artifacts/
+          if-no-files-found: error

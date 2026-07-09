@@ -23,6 +23,7 @@ Usage:
     python3 make_proof.py <artwork> [--spec booth_spec.json] [--panel NAME]
         [--job "Name"] [--prepped-by "Name"] [--qc-by "Name"]
         [--version V] [--fulfillment delivery|pickup] [--approve "Client Name"]
+        [--ack-review "reason"]   # required to approve a NEEDS-REVIEW proof; recorded
     # whole job (assembled document)
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
@@ -46,7 +47,10 @@ DISCLAIMER = ("This proof is for verifying CONTENT, LAYOUT, COLOR BREAK and SIZE
 ART_EXT = (".pdf", ".ai", ".eps") + proofer.RASTER_EXT
 
 # literal placeholder / unfilled markers that must never reach a client
-PLACEHOLDER_RE = re.compile(r"\b(tbd|tba|todo|name here|placeholder|lorem|xxx+)\b|[<>]|\?\?\?", re.I)
+# (deliberately NOT 'n/a' - that is a legitimate value)
+PLACEHOLDER_RE = re.compile(
+    r"\b(tbd|tba|todo|name here|placeholder|lorem|xxx+|fpo|tk|fill ?in|change ?me|"
+    r"client name|your (?:name|logo|text))\b|[<>]|\?\?\?", re.I)
 
 
 def looks_placeholder(v):
@@ -103,6 +107,20 @@ def proof_readiness(specs, prepped_by, qc_by, material):
     if is_blank(material):
         missing.append("Material")
     return placeholders, missing
+
+
+def job_readiness(spec, job=None, version=None):
+    """Placeholder scan over the JOB-level fields that render on client proofs
+    (job name, client, show, job #, version) - these used to bypass the
+    per-panel placeholder gate. Returns the same \"Label = 'value'\" strings
+    proof_readiness produces, so callers can merge the two lists. Pure."""
+    j = spec.get("job", {})
+    fields = [("Job name", job if job is not None else j.get("name")),
+              ("Client", j.get("client")),
+              ("Show", j.get("show")),
+              ("Job #", j.get("job_number")),
+              ("Proof version", version if version is not None else j.get("version"))]
+    return [f"{label} = '{val}'" for label, val in fields if looks_placeholder(val)]
 
 
 def job_totals(items):
@@ -309,7 +327,11 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
                        for f in fixes)
         fix_block = f'<div class="blk">What to change</div><ol class="fixlist">{flis}</ol>'
     if approve:
+        ack = meta.get("ack_review")
+        ack_html = (f'<div class="locknote">NEEDS-REVIEW items acknowledged before approval — '
+                    f'reason: {html.escape(str(ack))}</div>' if ack else '')
         signoff = (f'<div class="stamp">APPROVED &nbsp;·&nbsp; {html.escape(approve)} &nbsp;·&nbsp; {today}</div>'
+                   f'{ack_html}'
                    f'<div class="locknote">Locked on approval. Any change after this requires written approval '
                    f'and may trigger an add-on charge.</div>')
     else:
@@ -433,7 +455,7 @@ def collect_files(raw):
 
 def main():
     args = sys.argv[1:]
-    spec_path = panel_arg = job = approve = None
+    spec_path = panel_arg = job = approve = ack_review = None
     prepped_by = qc_by = version = fulfillment = None
     book = False
     raw = []
@@ -448,6 +470,8 @@ def main():
             job = args[i + 1]; i += 2
         elif a == "--approve":
             approve = args[i + 1]; i += 2
+        elif a == "--ack-review":
+            ack_review = args[i + 1]; i += 2
         elif a in ("--prepped-by", "--prepped"):
             prepped_by = args[i + 1]; i += 2
         elif a in ("--qc-by", "--qc"):
@@ -464,14 +488,15 @@ def main():
     if not files:
         print('usage: python3 make_proof.py <artwork ...> [--spec ...] [--panel NAME] [--job "Name"]\n'
               '       [--prepped-by "Name"] [--qc-by "Name"] [--version V]\n'
-              '       [--fulfillment delivery|pickup] [--approve "Client Name"] [--book]')
+              '       [--fulfillment delivery|pickup] [--approve "Client Name"]\n'
+              '       [--ack-review "reason"] [--book]')
         return
     spec = json.load(open(spec_path or proofer.find_default_spec()))
     job = job or spec.get("job", {}).get("name", "Untitled job")
     version = version or spec.get("job", {}).get("version")
     job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
     base_meta = {"prepped_by": prepped_by, "qc_by": qc_by, "version": version,
-                 "fulfillment": fulfillment}
+                 "fulfillment": fulfillment, "ack_review": ack_review}
 
     if len(files) > 1 or book:
         build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg)
@@ -493,12 +518,33 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     specs = panel_specs(panel, spec, base_meta.get("version"))
     placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
                                             base_meta.get("qc_by"), panel.get("finish"))
+    placeholders = job_readiness(spec, job, base_meta.get("version")) + placeholders
     if panel.get("needs_confirm"):
         missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
+    ack_review = base_meta.get("ack_review")
+    if approve is not None and (is_blank(approve) or looks_placeholder(approve)):
+        print(f'⛔ Refusing to stamp APPROVED: approver "{approve}" is blank or a placeholder — '
+              f"--approve needs the real client approver's name.")
+        sys.exit(1)
     if approve:
-        msg = _approval_block(res, placeholders, missing, os.path.basename(fname))
+        msg = _approval_block(res, placeholders, missing, os.path.basename(fname), ack_review)
         if msg:
-            print(msg); return
+            print(msg); sys.exit(1)
+
+    status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
+    if approve and ack_review:
+        status = f"APPROVED (REVIEW acknowledged: {ack_review})"
+    if approve:
+        # log BEFORE stamping: an approval that cannot be logged must not ship
+        logged, log_ok = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"],
+                                         status, base_meta.get("version"),
+                                         base_meta.get("prepped_by"), base_meta.get("qc_by"),
+                                         approve)
+        if not log_ok:
+            print(f"⛔ Refusing to stamp APPROVED: the approval could not be logged {logged}.\n"
+                  f"   Every approval must be recorded in {LOG} — fix the log (install openpyxl, "
+                  f"close/unlock the file) and re-run.")
+            sys.exit(1)
 
     thumb = thumbnail(fname, ext)
     meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
@@ -510,10 +556,10 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
     hp = os.path.abspath(base + suffix + ".html")
     pp = os.path.abspath(base + suffix + ".pdf")
     open(hp, "w").write(page)
-    status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
-    logged = log_proof(job, job_no, panel["name"], fname, res["verdict"], status,
-                       base_meta.get("version"), base_meta.get("prepped_by"),
-                       base_meta.get("qc_by"), approve)
+    if not approve:
+        logged = log_proof(job, job_no, panel["name"], fname, res["verdict"], status,
+                           base_meta.get("version"), base_meta.get("prepped_by"),
+                           base_meta.get("qc_by"), approve)
     ok = proofer.render_pdf(hp, pp)
     print(f"\nItem {panel['name']}  ·  verdict {res['verdict']}  ·  " +
           (f"APPROVED by {approve}" if approve else "awaiting client sign-off"))
@@ -529,6 +575,7 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         print("note: --approve is for a single item; the job document is a draft for per-item sign-off. Ignoring --approve.")
         approve = None
     panel_index = {p["name"]: i for i, p in enumerate(spec.get("panels", []))}
+    job_placeholders = job_readiness(spec, job, base_meta.get("version"))
     items, unmatched = [], []
     for n, fname in enumerate(files):
         ext = os.path.splitext(fname)[1].lower()
@@ -544,6 +591,7 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         specs = panel_specs(panel, spec, base_meta.get("version"))
         placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
                                                 base_meta.get("qc_by"), panel.get("finish"))
+        placeholders = job_placeholders + placeholders
         if panel.get("needs_confirm"):
             missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
         thumb = thumbnail(fname, ext, tag=str(n))
@@ -578,18 +626,49 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
     print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
 
 
-def _approval_block(res, placeholders, missing, fname):
-    """Return a refusal message if this item can't be locked-approved, else None."""
+def _approval_block(res, placeholders, missing, fname, ack_review=None):
+    """Return a refusal message if this item can't be locked-approved, else None.
+
+    Invariant 4: approval must refuse when a check fails or a measurement is
+    unconfirmed. Beyond the FAIL refusal: a size check that did not PASS is
+    ALWAYS refused (no flag overrides an unverified/wrong finished size); any
+    other NEEDS-REVIEW verdict needs an explicit --ack-review \"reason\",
+    which is recorded on the proof and in the log row."""
     if res["verdict"] == "FAIL":
         return (f"⛔ Refusing to stamp APPROVED: {fname} FAILS preflight "
                 f"({', '.join(k for k, v in res['results'].items() if v[0] == 'FAIL')}). Fix the FAIL(s) first.")
+    size_st, size_msg = res["results"].get("size", ("NA", "size was not checked"))
+    if size_st != "PASS":
+        return (f"⛔ Refusing to stamp APPROVED: the finished size is unverified or wrong — "
+                f"size check is {size_st}: {size_msg}\n   A measurement that did not PASS can "
+                f"never be approved (--ack-review does not override size); fix the file or "
+                f"verify the size first.")
     if placeholders:
         return ("⛔ Refusing to stamp APPROVED: placeholder/blank values would reach the client:\n   - "
                 + "\n   - ".join(placeholders) + "\n   Fill them in the booth spec first.")
     if missing:
         return ("⛔ Refusing to stamp APPROVED: not client-ready — " + ", ".join(missing)
                 + ".\n   Confirm these in the booth file (and provide --prepped-by / --qc-by) before approving.")
+    if res["verdict"] == "REVIEW":
+        warns = [k for k, v in res["results"].items() if v[0] == "WARN"]
+        if is_blank(ack_review) or looks_placeholder(ack_review):
+            return ("⛔ Refusing to stamp APPROVED: preflight verdict is NEEDS REVIEW — WARN on "
+                    + ", ".join(warns) + ".\n   Review those items, then re-run with "
+                    "--ack-review \"reason\" to approve with a recorded acknowledgment.")
     return None
+
+
+def _log_proof_safe(*args):
+    """(logged, ok) - ok is False when the row could NOT be persisted (openpyxl
+    missing, or the workbook load/save raised). Used on the approval path: an
+    approval that cannot be logged must not stamp (invariant 4 adjacent - the
+    'stamped and logged' promise)."""
+    if not openpyxl:
+        return "(openpyxl missing - log skipped)", False
+    try:
+        return log_proof(*args), True
+    except Exception as e:
+        return f"(log write failed: {e})", False
 
 
 def _cleanup(path):

@@ -207,6 +207,45 @@ def clean_cmyk_pdf(tmp_path):
     return build_pdf(tmp_path / "Wall_A_clean.pdf", objs)
 
 
+# ---------- P0-2: all pages analyzed, not just page 1 ----------
+def two_page_pdf(tmp_path):
+    """Page 1: clean CMYK at full+bleed size. Page 2: wrong-sized with an RGB
+    colorspace resource - previously invisible to every check."""
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+        page(FULL_BLEED_PT, "<< >>", "4 0 R"),
+        stream("", "1 0 0 0 k 0 0 7344 14544 re f"),
+        page((50 * 72, 60 * 72), "<< /ColorSpace << /CS0 /DeviceRGB >> >>", "6 0 R"),
+        stream("", "1 0 0 rg 0 0 3600 4320 re f"),
+    ]
+    return build_pdf(tmp_path / "twopage.pdf", objs)
+
+
+def test_multipage_bad_page2_is_not_pass(tmp_path):
+    res = proofer.run_checks(two_page_pdf(tmp_path), SPEC, "Wall A")
+    assert res is not None
+    st, msg = res["results"]["size"]
+    assert st == "FAIL" and "page 2" in msg
+    # page 2's RGB is aggregated into the color check
+    assert res["results"]["color"][0] == "FAIL"
+    assert res["verdict"] != "PASS"
+
+
+def test_multipage_all_pages_matching_still_passes(tmp_path):
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+        page(FULL_BLEED_PT, "<< >>", "4 0 R"),
+        stream("", "1 0 0 0 k 0 0 7344 14544 re f"),
+        page(FULL_BLEED_PT, "<< >>", "6 0 R"),
+        stream("", "0 1 0 0 k 0 0 7344 14544 re f"),
+    ]
+    info = proofer.analyze_pdf(build_pdf(tmp_path / "twopage_ok.pdf", objs))
+    assert info["pages"] == 2 and len(info["page_sizes"]) == 2
+    assert proofer.check_size(info, SPEC, PANEL)[0] == "PASS"
+
+
 def test_clean_cmyk_fixture_passes_all_checks(tmp_path):
     res = proofer.run_checks(clean_cmyk_pdf(tmp_path), SPEC, "Wall A")
     assert res is not None

@@ -324,39 +324,53 @@ def _scan_context(res, content, base_ctm, info, images, visited, depth):
 
 
 def analyze_pdf(path):
+    """Analyze EVERY page of the PDF (multi-page submissions used to have
+    pages 2+ completely unchecked). Colors / fonts / images / text aggregate
+    across pages; per-page sizes are recorded in info['page_sizes'] so
+    check_size can flag a page that matches no expected size. media_in /
+    trim_in / marks_margin_in stay page-1-based for backward compatibility."""
     from pypdf import PdfReader
     r = PdfReader(path)
-    page = r.pages[0]
-    mb = page.mediabox
     info = {"kind": "pdf", "pages": len(r.pages),
-            "media_in": (float(mb.width) / 72.0, float(mb.height) / 72.0),
-            "trim_in": None, "fonts": 0, "colors": set(), "images": [],
-            "min_ppi": None, "text": "", "marks_margin_in": None,
-            "analysis_gaps": []}
-    if "/TrimBox" in page:
-        tb = page.trimbox
-        info["trim_in"] = (float(tb.width) / 72.0, float(tb.height) / 72.0)
-    content = page_content(page, info["analysis_gaps"])
-    raw_images = []
-    _scan_context(page.get("/Resources"), content, None, info, raw_images,
-                  visited=set(), depth=0)
-    trim_w = (info["trim_in"] or info["media_in"])[0]
-    for im in raw_images:
-        pw, ph = im["px"]
-        placed = im["placed_pt"]
-        if placed and placed[0] > 1:
-            ppi = pw / (placed[0] / 72.0)
-            how = "placed"
-        else:
-            ppi = pw / trim_w if trim_w else 0  # fallback: assume full-width placement
-            how = "assumed full-width"
-        info["images"].append({"px": (pw, ph), "ppi": round(ppi), "how": how})
+            "media_in": None, "trim_in": None, "fonts": 0, "colors": set(),
+            "images": [], "min_ppi": None, "text": "", "marks_margin_in": None,
+            "analysis_gaps": [], "page_sizes": []}
+    visited = set()
+    texts = []
+    for pno, page in enumerate(r.pages, 1):
+        mb = page.mediabox
+        media_in = (float(mb.width) / 72.0, float(mb.height) / 72.0)
+        trim_in = None
+        if "/TrimBox" in page:
+            tb = page.trimbox
+            trim_in = (float(tb.width) / 72.0, float(tb.height) / 72.0)
+        if pno == 1:
+            info["media_in"], info["trim_in"] = media_in, trim_in
+        info["page_sizes"].append({"page": pno, "media_in": media_in, "trim_in": trim_in})
+        content = page_content(page, info["analysis_gaps"])
+        raw_images = []
+        _scan_context(page.get("/Resources"), content, None, info, raw_images,
+                      visited=visited, depth=0)
+        trim_w = (trim_in or media_in)[0]
+        for im in raw_images:
+            pw, ph = im["px"]
+            placed = im["placed_pt"]
+            if placed and placed[0] > 1:
+                ppi = pw / (placed[0] / 72.0)
+                how = "placed"
+            else:
+                ppi = pw / trim_w if trim_w else 0  # fallback: assume full-width placement
+                how = "assumed full-width"
+            info["images"].append({"px": (pw, ph), "ppi": round(ppi), "how": how})
+        try:
+            t = (page.extract_text() or "").strip()
+            if t:
+                texts.append(t)
+        except Exception:
+            pass
+    info["text"] = "\n".join(texts)
     if info["images"]:
         info["min_ppi"] = min(i["ppi"] for i in info["images"])
-    try:
-        info["text"] = (page.extract_text() or "").strip()
-    except Exception:
-        info["text"] = ""
     if info["trim_in"]:
         mw, tw = info["media_in"][0], info["trim_in"][0]
         info["marks_margin_in"] = round((mw - tw) / 2.0, 3)
@@ -381,6 +395,15 @@ def check_size(info, spec, p):
         tw, th = (info["trim_in"] or info["media_in"])
         m = size_match(tw, th, expected)
         size_txt = f'{tw:.2f}" x {th:.2f}" ({"trim" if info["trim_in"] else "media (no TrimBox)"})'
+        # every page must match an expected size, not just page 1
+        bad_pages = []
+        for ps in info.get("page_sizes", [])[1:]:
+            pw2, ph2 = (ps["trim_in"] or ps["media_in"])
+            if not size_match(pw2, ph2, expected):
+                bad_pages.append(f'page {ps["page"]} is {pw2:.2f}" x {ph2:.2f}"')
+        if bad_pages:
+            return "FAIL", (f'{size_txt}{" matches " + m if m else ""}, but ' + "; ".join(bad_pages) +
+                            ' - no expected size matches (submit one panel per file)')
         if m:
             extra = "" if info["trim_in"] else "  - no TrimBox set, could not isolate bleed"
             return "PASS", f'{size_txt} matches {m}{extra}'

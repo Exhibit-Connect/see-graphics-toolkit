@@ -519,30 +519,51 @@ def check_color(info):
     return "WARN", ", ".join(sorted(colors))
 
 
-def check_resolution(info):
+def resolution_band(spec):
+    """(min, max) ppi from the booth JSON's settings.resolution_ppi - the SAME
+    keys the client-facing spec packet prints, so the packet's promise and the
+    proofer's enforcement can never diverge. Defaults 120/150. Pure."""
+    band = (spec or {}).get("settings", {}).get("resolution_ppi") or {}
+    return band.get("min", 120), band.get("max", 150)
+
+
+def check_resolution(info, spec=None, matched_scale=None):
+    """Grade raster ppi against the spec's resolution band. The band is
+    defined AT BUILD SCALE (clients build at settings.scale, usually 1/2);
+    when the file matched a FULL-scale size candidate and scale < 1, the floor
+    relaxes to min*scale (same printed quality) - RELAX ONLY, the half-scale
+    path is never tightened. The applied threshold is stated in the detail."""
+    lo, hi = resolution_band(spec)
+    scale = (spec or {}).get("settings", {}).get("scale", 0.5)
+    floor, norm_note = lo, ""
+    if matched_scale is not None and matched_scale >= 1 and scale and scale < 1:
+        floor = lo * scale
+        norm_note = (f" [full-scale file: {lo:g} ppi at {scale:g}-scale build "
+                     f"= floor relaxed to {floor:g} ppi]")
+    req = f"required {floor:g}-{hi:g} ppi at build scale{norm_note}"
     if info["kind"] == "raster":
         d = info["dpi"]
         if not d:
             return "WARN", "no DPI tag - cannot verify resolution at print size"
-        if d < 120:
-            return "FAIL", f"{d} ppi (< 120)"
-        if d > 150:
-            return "WARN", f"{d} ppi (> 150, more than needed)"
-        return "PASS", f"{d} ppi"
+        if d < floor:
+            return "FAIL", f"{d} ppi (< {floor:g}){norm_note}"
+        if d > hi:
+            return "WARN", f"{d} ppi (> {hi:g}, more than needed)"
+        return "PASS", f"{d} ppi ({req})"
     if not info["images"]:
         gaps = info.get("analysis_gaps") or []
         if gaps:
             return "WARN", (f"could not fully analyze {len(gaps)} object(s) - unable to confirm "
                             f"the file is vector-only, so resolution is unverified")
         return "PASS", "no raster images (vector) - resolution not a factor"
-    lo = min(i["ppi"] for i in info["images"])
-    hi = max(i["ppi"] for i in info["images"])
+    lo_img = min(i["ppi"] for i in info["images"])
+    hi_img = max(i["ppi"] for i in info["images"])
     detail = ", ".join(f'{i["px"][0]}x{i["px"][1]}px -> {i["ppi"]}ppi ({i["how"]})' for i in info["images"][:6])
-    if lo < 120:
-        return "FAIL", f"lowest image {lo} ppi (< 120). {detail}"
-    if hi > 150:
-        return "WARN", f"highest image {hi} ppi (> 150, more than needed). {detail}"
-    return "PASS", f"{lo}-{hi} ppi. {detail}"
+    if lo_img < floor:
+        return "FAIL", f"lowest image {lo_img} ppi (< {floor:g}){norm_note}. {detail}"
+    if hi_img > hi:
+        return "WARN", f"highest image {hi_img} ppi (> {hi:g}, more than needed). {detail}"
+    return "PASS", f"{lo_img}-{hi_img} ppi ({req}). {detail}"
 
 
 def check_fonts(info):
@@ -625,7 +646,12 @@ def run_checks(path, spec, panel_arg=None):
     ext = os.path.splitext(path)[1].lower()
     info = analyze_raster(path) if ext in RASTER_EXT else analyze_pdf(path)
     results = {"size": check_size(info, spec, panel), "color": check_color(info)}
-    rc = check_resolution(info)
+    # thread the scale check_size matched (P0-5 plumbing) into the resolution
+    # band so a full-scale file gets the relax-only normalization (P0-9)
+    label = info.get("size_match_label")
+    sc = spec.get("settings", {}).get("scale", 0.5)
+    matched_scale = _bare_trim_scale(label, sc)[1] if label else None
+    rc = check_resolution(info, spec, matched_scale)
     if rc:
         results["resolution"] = rc
     results["fonts"] = check_fonts(info)
@@ -682,16 +708,17 @@ def fix_instructions(results, info, spec, panel):
                              "print as intended.")
 
     st = results.get("resolution", ("PASS", ""))[0]
+    rlo, rhi = resolution_band(spec)               # spec-driven band (P0-9)
     ppi = info.get("min_ppi") or info.get("dpi")   # PDFs carry min_ppi; rasters carry dpi
     if st == "FAIL":
-        howlow = f"the lowest image is about {ppi} ppi" if ppi else "an image is under 120 ppi"
+        howlow = f"the lowest image is about {ppi} ppi" if ppi else f"an image is under {rlo:g} ppi"
         add("resolution", st,
-            f'Increase image resolution — {howlow} at final size, and print needs 120–150. Use a '
-            f'higher-resolution original, or place the image smaller, so every image is at least 120 ppi '
-            f'at the printed size.')
-    elif st == "WARN" and ppi and ppi > 150:
+            f'Increase image resolution — {howlow} at build scale, and print needs {rlo:g}–{rhi:g}. Use a '
+            f'higher-resolution original, or place the image smaller, so every image is at least {rlo:g} ppi '
+            f'at build scale.')
+    elif st == "WARN" and ppi and ppi > rhi:
         add("resolution", st,
-            f'Resolution is higher than needed (~{ppi} ppi). 150 ppi at final size is plenty — you can '
+            f'Resolution is higher than needed (~{ppi} ppi). {rhi:g} ppi at build scale is plenty — you can '
             f'downsample to shrink the file (optional, not required).')
 
     if results.get("fonts", ("PASS", ""))[0] == "WARN":

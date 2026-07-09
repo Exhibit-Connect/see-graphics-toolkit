@@ -308,6 +308,61 @@ def test_check_size_records_matched_label_for_marks_threading():
     assert info["size_match_label"] is None
 
 
+# ---------- P0-9: resolution thresholds from the booth JSON ----------
+BAND_SPEC = {"settings": {"resolution_ppi": {"min": 100, "max": 200}, "scale": 0.5}}
+
+
+def test_resolution_band_read_from_spec_with_defaults():
+    assert proofer.resolution_band(BAND_SPEC) == (100, 200)
+    assert proofer.resolution_band(SPEC) == (120, 150)     # no band -> defaults
+    assert proofer.resolution_band(None) == (120, 150)
+
+
+def test_check_resolution_spec_band_drives_thresholds():
+    # 110 ppi fails the default 120 floor but PASSes a min:100 spec
+    st, msg = proofer.check_resolution({"kind": "raster", "dpi": 110}, BAND_SPEC)
+    assert st == "PASS" and "100" in msg and "200" in msg
+    assert proofer.check_resolution({"kind": "raster", "dpi": 90}, BAND_SPEC)[0] == "FAIL"
+    st, msg = proofer.check_resolution({"kind": "raster", "dpi": 210}, BAND_SPEC)
+    assert st == "WARN" and "200" in msg
+
+
+def test_check_resolution_full_scale_match_relaxes_floor():
+    # spec band 120-150 at the 1/2-scale build; a FULL-scale file at 80 ppi is
+    # better printed quality than a passing 150-ppi half-scale file
+    st, msg = proofer.check_resolution({"kind": "raster", "dpi": 80}, SPEC, matched_scale=1.0)
+    assert st == "PASS"
+    assert "relaxed to 60 ppi" in msg              # normalization named in the detail
+    # still a floor: 50 ppi fails even relaxed
+    assert proofer.check_resolution({"kind": "raster", "dpi": 50}, SPEC,
+                                    matched_scale=1.0)[0] == "FAIL"
+
+
+def test_check_resolution_half_scale_path_never_relaxed():
+    # relax-only: half-scale files keep the full 120 floor (invariant 5 -
+    # clients are told to deliver 120-150 at the 1/2-scale build)
+    st, msg = proofer.check_resolution({"kind": "raster", "dpi": 130}, SPEC, matched_scale=0.5)
+    assert st == "PASS" and "relaxed" not in msg
+    assert proofer.check_resolution({"kind": "raster", "dpi": 119}, SPEC,
+                                    matched_scale=0.5)[0] == "FAIL"
+
+
+def test_check_resolution_pdf_images_use_spec_band():
+    info = {"kind": "pdf", "images": [{"px": (500, 500), "ppi": 110, "how": "placed"}]}
+    assert proofer.check_resolution(info)[0] == "FAIL"              # default 120
+    st, msg = proofer.check_resolution(info, BAND_SPEC)
+    assert st == "PASS" and "100" in msg
+
+
+def test_fix_instructions_resolution_quotes_spec_band():
+    spec = {"settings": {"resolution_ppi": {"min": 100, "max": 200}},
+            "panels": [PANEL_A]}
+    fixes = proofer.fix_instructions({"resolution": ("FAIL", "low")}, {"min_ppi": 72},
+                                     spec, PANEL_A)
+    text = fixes[0]["text"]
+    assert "100" in text and "200" in text and "at build scale" in text
+
+
 # ---------- P0-7: REVIEW verdict must render a report; batch must survive ----------
 def test_build_report_html_review_verdict_renders():
     # used to raise KeyError('NEEDS REVIEW') and kill the whole batch

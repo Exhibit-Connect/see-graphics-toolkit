@@ -269,6 +269,35 @@ def test_crop_mark_margin_fixture_warns_marks(tmp_path):
     assert st == "WARN" and "crop/registration marks" in msg
 
 
+# ---------- P0-9: matched scale threads into the resolution band ----------
+def test_full_scale_match_relaxes_resolution_floor_end_to_end(tmp_path):
+    """Full+bleed (full-scale) file with a 90-ppi CMYK image, spec scale 0.5:
+    90 ppi used to false-FAIL the 120 floor documented for the 1/2-scale build."""
+    objs = catalog_and_pages() + [
+        page(FULL_BLEED_PT, "<< /XObject << /Im1 4 0 R >> >>", "5 0 R"),
+        CMYK_IMAGE_1440,
+        stream("", "q 1152 0 0 1152 0 0 cm /Im1 Do Q"),  # 1440px / 16in = 90 ppi
+    ]
+    res = proofer.run_checks(build_pdf(tmp_path / "Wall_A_full.pdf", objs), SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    st, msg = res["results"]["resolution"]
+    assert st == "PASS" and "relaxed to 60 ppi" in msg
+
+
+def test_half_scale_match_keeps_full_floor_end_to_end(tmp_path):
+    """Half+bleed (half-scale) file with the same 90-ppi image must still FAIL:
+    the half-scale path is never relaxed."""
+    half_bleed_pt = (51 * 72, 101 * 72)
+    objs = catalog_and_pages() + [
+        page(half_bleed_pt, "<< /XObject << /Im1 4 0 R >> >>", "5 0 R"),
+        CMYK_IMAGE_1440,
+        stream("", "q 1152 0 0 1152 0 0 cm /Im1 Do Q"),
+    ]
+    res = proofer.run_checks(build_pdf(tmp_path / "Wall_A_half.pdf", objs), SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    assert res["results"]["resolution"][0] == "FAIL"
+
+
 # ---------- P0-2: all pages analyzed, not just page 1 ----------
 def two_page_pdf(tmp_path):
     """Page 1: clean CMYK at full+bleed size. Page 2: wrong-sized with an RGB

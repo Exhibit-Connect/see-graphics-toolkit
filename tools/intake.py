@@ -27,12 +27,16 @@ text pass finds nothing (a visual handoff), the AI-read panels SEED the draft -
 each flagged needs_confirm, with a size only where one is actually printed.
 
 Usage:
-    python3 intake.py <handoff.pdf|.ai|.eps> [--job "Name"] [--ai] [--out file.json]
+    python3 intake.py <handoff.pdf|.ai|.eps> [--job "Name"] [--ai] [--out file.json] [--max-pages N]
+
+All pages are rendered/OCR'd by default (--max-pages caps it, and the skip is
+disclosed). Any page Ghostscript/tesseract could not process is reported in the
+printed summary, the review's "Tool warnings" section and _intake.warnings -
+never silently dropped.
 """
 import json, sys, os, re, subprocess, tempfile, shutil
 
 PDF_EXT = (".pdf", ".ai", ".eps")
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 SETTINGS = {"scale": 0.5, "bleed_per_side_in": 1.0, "safe_margin_in": 4.0,
             "color_mode": "CMYK / Pantone", "resolution_ppi": {"min": 120, "max": 150},
@@ -140,48 +144,103 @@ def parse_graphic_key(text):
 AI_RENDER_DPI = 150
 OCR_RENDER_DPI = 300
 
-
-def render_pages(path, n_pages, max_pages=5):
-    """Rasterize the first pages to PNG for the AI pass (Ghostscript), at
-    AI_RENDER_DPI so the model can read small dimension labels, not just shapes."""
-    out = []
-    for p in range(1, min(n_pages, max_pages) + 1):
-        png = os.path.abspath(f"_intake_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{AI_RENDER_DPI}",
-                        f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
-                       capture_output=True)
-        if os.path.exists(png):
-            out.append(png)
-    return out
-
-
+GS = shutil.which("gs")                # Ghostscript - rasterizes pages for the AI/OCR passes
 TESSERACT = shutil.which("tesseract")  # deterministic OCR engine, if installed
 
 
-def ocr_pages(path, n_pages, max_pages=8):
-    """Render pages to high-res PNG and OCR them with tesseract (DETERMINISTIC) - the
-    fallback when a handoff has no extractable text (a visual deck). Returns the
-    concatenated OCR text, or '' if tesseract isn't available. Same image -> same text
-    every run, so panels recovered from this don't vary run-to-run (unlike the AI)."""
-    if not TESSERACT:
-        return ""
+def _stderr_tail(proc, n=200):
+    """Last chars of a subprocess result's stderr, decoded safely ('' if none)."""
+    s = getattr(proc, "stderr", None) or b""
+    if isinstance(s, bytes):
+        s = s.decode("utf-8", "replace")
+    s = s.strip()
+    return s[-n:]
+
+
+def _page_cap(n_pages, max_pages, what):
+    """(last_page, warnings) for a page cap. Default = ALL pages (a capped read
+    used to silently drop pages 6+/9+ - a missed wall). When a cap applies, the
+    skip is stated honestly so it lands in the review + spec warnings."""
+    if max_pages is None or max_pages >= n_pages:
+        return n_pages, []
+    return max_pages, [f"{what}: read {max_pages} of {n_pages} pages (--max-pages {max_pages}); "
+                       f"skipped pages {max_pages + 1}-{n_pages}"]
+
+
+def render_pages(path, n_pages, max_pages=None, run=None):
+    """Rasterize pages to PNG for the AI pass (Ghostscript), at AI_RENDER_DPI so
+    the model can read small dimension labels, not just shapes.
+
+    Returns (image_paths, warnings). Every page goes to a UNIQUE path inside a
+    per-run temp dir (a fixed cwd name let a stale or concurrent job's page be
+    sent to the AI), and a page counts only when gs exited 0 AND created the
+    file. Failed pages are recorded in `warnings` (page number + stderr tail) -
+    never silently dropped. `run` is injectable for tests."""
+    run = run or subprocess.run
+    if not GS:
+        return [], ["Ghostscript not installed — AI/OCR page rendering skipped "
+                    "(no pages could be rasterized)"]
+    last, warnings = _page_cap(n_pages, max_pages, "AI page render")
+    tmpdir = tempfile.mkdtemp(prefix="_intake_render_")
     out = []
-    for p in range(1, min(n_pages, max_pages) + 1):
-        png = os.path.abspath(f"_intake_ocr_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{OCR_RENDER_DPI}",
-                        f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path], capture_output=True)
-        if not os.path.exists(png):
+    for p in range(1, last + 1):
+        png = os.path.join(tmpdir, f"p{p}.png")
+        r = run([GS, "-q", "-sDEVICE=png16m", f"-r{AI_RENDER_DPI}",
+                 f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
+                capture_output=True)
+        if r.returncode != 0 or not os.path.exists(png):
+            tail = _stderr_tail(r)
+            warnings.append(f"page {p}: Ghostscript render failed (rc {r.returncode})"
+                            + (f": {tail}" if tail else ""))
             continue
-        try:
-            r = subprocess.run([TESSERACT, png, "stdout"], capture_output=True, text=True)
-            out.append(r.stdout or "")
-        except Exception:
-            pass
-        try:
-            os.remove(png)
-        except OSError:
-            pass
-    return "\n".join(out)
+        out.append(png)
+    if not out:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return out, warnings
+
+
+def ocr_pages(path, n_pages, max_pages=None, run=None):
+    """Render pages to high-res PNG and OCR them with tesseract (DETERMINISTIC) - the
+    fallback when a handoff has no extractable text (a visual deck). Returns
+    (concatenated_text, warnings). Same image -> same text every run, so panels
+    recovered from this don't vary run-to-run (unlike the AI). Page PNGs live in a
+    per-run temp dir (removed in a finally); a failed gs or tesseract page is
+    recorded in `warnings` instead of silently vanishing ('no wall is missed').
+    `run` is injectable for tests."""
+    run = run or subprocess.run
+    if not TESSERACT:
+        return "", ["tesseract not installed — OCR of the visual handoff skipped"]
+    if not GS:
+        return "", ["Ghostscript not installed — AI/OCR page rendering skipped "
+                    "(no pages could be rasterized)"]
+    last, warnings = _page_cap(n_pages, max_pages, "OCR")
+    tmpdir = tempfile.mkdtemp(prefix="_intake_ocr_")
+    out = []
+    try:
+        for p in range(1, last + 1):
+            png = os.path.join(tmpdir, f"ocr_p{p}.png")
+            r = run([GS, "-q", "-sDEVICE=png16m", f"-r{OCR_RENDER_DPI}",
+                     f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
+                    capture_output=True)
+            if r.returncode != 0 or not os.path.exists(png):
+                tail = _stderr_tail(r)
+                warnings.append(f"page {p}: Ghostscript render failed (rc {r.returncode})"
+                                + (f": {tail}" if tail else ""))
+                continue
+            try:
+                t = run([TESSERACT, png, "stdout"], capture_output=True, text=True)
+            except OSError as e:
+                warnings.append(f"page {p}: tesseract failed: {e}")
+                continue
+            if t.returncode != 0:
+                tail = _stderr_tail(t)
+                warnings.append(f"page {p}: tesseract failed (rc {t.returncode})"
+                                + (f": {tail}" if tail else ""))
+                continue
+            out.append(t.stdout or "")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return "\n".join(out), warnings
 
 
 # Standard SEE material vocabulary (mirrors finish_options in the example booth spec).
@@ -213,27 +272,33 @@ AI_PROMPT = (
 )
 
 
-def ai_enrich(path, n_pages, det_panels):
+def ai_enrich(path, n_pages, det_panels, max_pages=None):
     import ai_client
-    imgs = render_pages(path, n_pages)
-    prompt = AI_PROMPT.replace("__DET__", json.dumps(det_panels))
-    if not ai_client.available():
-        payload = ai_client._redacted_payload(prompt, imgs)
-        open("_intake_ai_dryrun.json", "w").write(json.dumps(payload, indent=2))
-        return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
-                "_images": imgs, "_model": ai_client.MODEL}
+    imgs, warnings = render_pages(path, n_pages, max_pages)
+    tmpdirs = {os.path.dirname(p) for p in imgs}
     try:
-        data = ai_client.ask_json(prompt, imgs)
-        data["_status"] = "live"; data["_model"] = ai_client.MODEL
-        return data
-    except Exception as e:
-        return {"_status": "error", "_error": str(e)}
+        prompt = AI_PROMPT.replace("__DET__", json.dumps(det_panels))
+        if not ai_client.available():
+            payload = ai_client._redacted_payload(prompt, imgs)
+            with open("_intake_ai_dryrun.json", "w") as f:
+                f.write(json.dumps(payload, indent=2))
+            return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
+                    "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
+        try:
+            data = ai_client.ask_json(prompt, imgs)
+            data["_status"] = "live"; data["_model"] = ai_client.MODEL; data["_warnings"] = warnings
+            return data
+        except Exception as e:
+            return {"_status": "error", "_error": str(e), "_warnings": warnings}
     finally:
+        # the finally covers the dry-run return too - no page PNG survives the run
         for p in imgs:
             try:
                 os.remove(p)
             except OSError:
                 pass
+        for d in tmpdirs:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def ai_field_guesses(ai, panels, field):
@@ -311,8 +376,10 @@ def ai_seed_panels(ai):
     return seeded, undim
 
 
-def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_source="text", undimensioned=None):
+def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_source="text", undimensioned=None,
+                 warnings=None):
     undimensioned = undimensioned or []
+    warnings = warnings or []
     if panel_source == "ai-vision":
         head = f"## Panels — seeded from the AI VISION pass ({len(panels)}) — CONFIRM each, incl. every dimension"
     elif panel_source == "ocr":
@@ -365,6 +432,12 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
         lines += ["", "### Notes pulled from the package"]
         for e in extras:
             lines.append(f"- {e}")
+    if warnings:
+        lines += ["", "### Tool warnings",
+                  "_Pages the render/OCR tools could NOT process — the draft may be missing "
+                  "panels from these pages; check them by hand._", ""]
+        for w in warnings:
+            lines.append(f"- ⚠ {w}")
     lines += ["", "## AI enrichment pass"]
     if ai is None:
         lines.append("- not run (use `--ai`).")
@@ -386,7 +459,7 @@ def main():
     args = sys.argv[1:]
     use_ai = "--ai" in args
     args = [a for a in args if a != "--ai"]
-    job, out = None, None
+    job, out, max_pages = None, None, None
     files = []
     i = 0
     while i < len(args):
@@ -394,10 +467,12 @@ def main():
             job = args[i + 1]; i += 2
         elif args[i] == "--out":
             out = args[i + 1]; i += 2
+        elif args[i] == "--max-pages":
+            max_pages = int(args[i + 1]); i += 2
         else:
             files.append(args[i]); i += 1
     if not files:
-        print("usage: python3 intake.py <handoff.pdf|.ai|.eps> [--job \"Name\"] [--ai] [--out file.json]")
+        print("usage: python3 intake.py <handoff.pdf|.ai|.eps> [--job \"Name\"] [--ai] [--out file.json] [--max-pages N]")
         return
     src = files[0]
     ext = os.path.splitext(src)[1].lower()
@@ -424,7 +499,10 @@ def main():
         extras.append("Door referenced — confirm which wall and side.")
 
     job = job or "Untitled job (from " + os.path.basename(src) + ")"
-    ai = ai_enrich(src, n, panels) if use_ai else None
+    warnings = []
+    ai = ai_enrich(src, n, panels, max_pages) if use_ai else None
+    if isinstance(ai, dict):
+        warnings += ai.get("_warnings", [])
 
     # The text pass is the reliable floor. If it found NOTHING (a visual / non-text
     # handoff), seed the draft from the AI vision result so the handoff still yields a
@@ -437,7 +515,8 @@ def main():
         # key — same image -> same panels every run — and fall back to the AI vision pass
         # only if OCR recovers nothing. Either way the panels stay needs_confirm.
         ocr_panels = []
-        ocr_text = ocr_pages(src, n)
+        ocr_text, ocr_warnings = ocr_pages(src, n, max_pages)
+        warnings += ocr_warnings
         if ocr_text:
             ocr_panels = parse_graphic_key(ocr_text) or parse_panels(ocr_text)[0]
         if ocr_panels:
@@ -467,14 +546,14 @@ def main():
                     "panels_found_text": len(panels), "panels_in_draft": len(spec_panels),
                     "ai_undimensioned": undimensioned, "fullscale_confirms": len(fullscale),
                     "conflicts": [{"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
-                    "notes": extras, "ai": ai},
+                    "notes": extras, "warnings": warnings, "ai": ai},
     }
     base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_")
     out = out or f"booth_spec_{base}_DRAFT.json"
     json.dump(spec, open(out, "w"), indent=2)
     review = f"{base}_intake_review.md"
     open(review, "w").write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
-                                          panel_source, undimensioned))
+                                          panel_source, undimensioned, warnings))
 
     print(f"Read {n} pages of {os.path.basename(src)}")
     if panel_source == "ocr":
@@ -489,6 +568,8 @@ def main():
         print(f"Panels found (text pass): {len(panels)}  ->  " + ", ".join(p['name'] for p in panels))
     if conflicts:
         print(f"  ⚠ {len(conflicts)} dimension conflict(s): " + "; ".join(f"{c[0]} {c[1]}!={c[2]}" for c in conflicts))
+    for w in warnings:
+        print(f"  ⚠ tool warning: {w}")
     if ai:
         print(f"  AI pass: {ai.get('_status')}" + (f" ({ai.get('_note')})" if ai.get('_note') else ""))
     print(f"Draft spec : {out}")

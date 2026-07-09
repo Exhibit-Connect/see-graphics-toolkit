@@ -136,6 +136,155 @@ def test_parse_graphic_key_ignores_non_key_lines():
     assert intake.parse_graphic_key(text) == []   # 700 is out of the 1..600 range
 
 
+# ---------- P1-1: gs/tesseract hygiene - checked results, temp dirs, warnings ----------
+import json
+import os
+
+import pytest
+
+
+class _Proc:
+    def __init__(self, returncode=0, stdout="", stderr=b""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _gs_writer(fail_pages=(), stderr=b""):
+    """Fake subprocess.run: creates the -o target like gs would, unless the page
+    is in fail_pages (then rc=1, nothing written)."""
+    def run(cmd, **kw):
+        if "-o" in cmd:
+            page = int(next(a for a in cmd if a.startswith("-dFirstPage=")).split("=")[1])
+            if page in fail_pages:
+                return _Proc(1, stderr=stderr)
+            with open(cmd[cmd.index("-o") + 1], "wb") as f:
+                f.write(b"\x89PNG page render")
+            return _Proc(0)
+        return _Proc(0, stdout="OCR TEXT")
+    return run
+
+
+def test_render_pages_gs_failure_recorded_in_warnings_not_images(monkeypatch, tmp_path):
+    monkeypatch.setattr(intake, "GS", "gs")
+    imgs, warns = intake.render_pages("x.pdf", 3, run=_gs_writer(fail_pages=(2,), stderr=b"gs blew up"))
+    try:
+        assert len(imgs) == 2
+        assert len(warns) == 1
+        assert "page 2" in warns[0] and "rc 1" in warns[0] and "gs blew up" in warns[0]
+    finally:
+        for p in imgs:
+            os.remove(p)
+
+
+def test_render_pages_never_picks_up_stale_fixed_path_file(monkeypatch, tmp_path):
+    # a decoy at the OLD fixed cwd name must never become "this run's" page
+    monkeypatch.chdir(tmp_path)
+    decoy = tmp_path / "_intake_p1.png"
+    decoy.write_bytes(b"stale page from another job")
+    monkeypatch.setattr(intake, "GS", "gs")
+    imgs, warns = intake.render_pages("x.pdf", 1, run=lambda *a, **k: _Proc(1))
+    assert imgs == []                       # nothing produced -> nothing returned
+    assert warns and "page 1" in warns[0]
+    assert decoy.read_bytes() == b"stale page from another job"
+
+
+def test_render_pages_gs_missing_returns_graceful_warning(monkeypatch):
+    monkeypatch.setattr(intake, "GS", None)
+    imgs, warns = intake.render_pages("x.pdf", 4)
+    assert imgs == []
+    assert warns and "Ghostscript not installed" in warns[0]
+
+
+def test_render_pages_processes_all_pages_by_default(monkeypatch):
+    monkeypatch.setattr(intake, "GS", "gs")
+    imgs, warns = intake.render_pages("x.pdf", 9, run=_gs_writer())
+    try:
+        assert len(imgs) == 9               # old cap was 5; default is now ALL pages
+        assert warns == []
+    finally:
+        for p in imgs:
+            os.remove(p)
+
+
+def test_render_pages_cap_is_disclosed(monkeypatch):
+    monkeypatch.setattr(intake, "GS", "gs")
+    imgs, warns = intake.render_pages("x.pdf", 9, max_pages=2, run=_gs_writer())
+    try:
+        assert len(imgs) == 2
+        assert any("read 2 of 9 pages" in w and "skipped pages 3-9" in w for w in warns)
+    finally:
+        for p in imgs:
+            os.remove(p)
+
+
+def test_ocr_pages_tesseract_failure_recorded_and_tmpdir_cleaned(monkeypatch, tmp_path):
+    monkeypatch.setattr(intake, "GS", "gs")
+    monkeypatch.setattr(intake, "TESSERACT", "/fake/tesseract")
+    made = []
+
+    def run(cmd, **kw):
+        if "-o" in cmd:
+            out = cmd[cmd.index("-o") + 1]
+            made.append(out)
+            with open(out, "wb") as f:
+                f.write(b"\x89PNG")
+            return _Proc(0)
+        raise OSError("tesseract exploded")
+
+    text, warns = intake.ocr_pages("x.pdf", 2, run=run)
+    assert text == ""
+    assert len(warns) == 2 and all("tesseract failed" in w for w in warns)
+    assert made and not any(os.path.exists(p) for p in made)   # temp dir removed
+
+
+def test_ocr_pages_missing_tools_warn_instead_of_silence(monkeypatch):
+    monkeypatch.setattr(intake, "TESSERACT", None)
+    text, warns = intake.ocr_pages("x.pdf", 2)
+    assert text == "" and any("tesseract not installed" in w for w in warns)
+    monkeypatch.setattr(intake, "TESSERACT", "/fake/tesseract")
+    monkeypatch.setattr(intake, "GS", None)
+    text, warns = intake.ocr_pages("x.pdf", 2)
+    assert text == "" and any("Ghostscript not installed" in w for w in warns)
+
+
+def test_ai_enrich_dry_run_leaves_no_page_pngs(monkeypatch, tmp_path):
+    import ai_client
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(intake, "GS", "gs")
+    monkeypatch.setattr(intake.subprocess, "run", _gs_writer())
+    monkeypatch.setattr(ai_client, "available", lambda: False)
+    ai = intake.ai_enrich("x.pdf", 3, [])
+    assert ai["_status"] == "dry-run"
+    assert ai["_pages_rendered"] == 3
+    assert (tmp_path / "_intake_ai_dryrun.json").exists()
+    assert list(tmp_path.glob("_intake_p*.png")) == []      # no cwd litter
+    assert list(tmp_path.glob("**/*.png")) == []            # temp pages cleaned up too
+
+
+def _blank_pdf(path, pages=1):
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(width=200, height=200)
+    with open(path, "wb") as f:
+        w.write(f)
+
+
+def test_main_surfaces_tool_warnings_in_review_and_spec(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")                       # no text -> OCR branch
+    monkeypatch.setattr(intake, "ocr_pages",
+                        lambda *a, **k: ("", ["page 1: Ghostscript render failed (rc 1): boom"]))
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Warn Job"])
+    intake.main()
+    spec = json.load(open("booth_spec_Warn_Job_DRAFT.json"))
+    assert spec["_intake"]["warnings"] == ["page 1: Ghostscript render failed (rc 1): boom"]
+    review = open("Warn_Job_intake_review.md").read()
+    assert "### Tool warnings" in review and "boom" in review
+    assert "tool warning" in capsys.readouterr().out
+
+
 def test_ai_field_guesses_maps_finish_and_finishing_type():
     ai = {"_status": "live", "panels": [
         {"name": "E", "finish": "fabric", "finishing_type": "SEG"},

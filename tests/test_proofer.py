@@ -129,6 +129,76 @@ def test_check_fonts_form_gap_blocks_outlined_pass():
     assert proofer.check_fonts({"kind": "pdf", "fonts": 0})[0] == "PASS"
 
 
+# ---------- P0-4: size check verifies bleed presence ----------
+def _pdf_info(media, trim=None, margin=None):
+    return {"kind": "pdf", "media_in": media, "trim_in": trim,
+            "marks_margin_in": margin, "page_sizes": []}
+
+
+PANEL_A = SPEC["panels"][0]  # 100 x 200, bleed 1.0, scale 0.5
+
+
+def test_size_trim_match_without_bleed_warns():
+    # media == trim size, no TrimBox -> zero bleed in the file
+    st, msg = proofer.check_size(_pdf_info((100, 200)), SPEC, PANEL_A)
+    assert st == "WARN"
+    assert "no bleed detected" in msg
+    assert 'add 1" bleed per side' in msg
+
+
+def test_size_half_trim_match_without_bleed_warns_scaled():
+    st, msg = proofer.check_size(_pdf_info((50, 100)), SPEC, PANEL_A)
+    assert st == "WARN"
+    assert "no bleed detected" in msg and 'add 0.5" bleed per side' in msg
+
+
+def test_size_full_plus_bleed_still_passes():
+    st, msg = proofer.check_size(_pdf_info((102, 202)), SPEC, PANEL_A)
+    assert st == "PASS" and "full + bleed" in msg
+
+
+def test_size_trim_match_with_real_bleed_margin_passes():
+    # TrimBox at trim size, media extends 1" per side -> bleed is present
+    st, msg = proofer.check_size(_pdf_info((102, 202), trim=(100, 200), margin=1.0),
+                                 SPEC, PANEL_A)
+    assert st == "PASS" and "full trim" in msg
+
+
+def test_size_trimbox_equal_to_media_warns():
+    # TrimBox present but media == trim: still zero bleed
+    st, msg = proofer.check_size(_pdf_info((100, 200), trim=(100, 200), margin=0.0),
+                                 SPEC, PANEL_A)
+    assert st == "WARN" and "no bleed detected" in msg
+
+
+def test_size_raster_at_bare_trim_warns():
+    info = {"kind": "raster", "px": (5000, 10000), "dpi": 50}  # 100 x 200 in
+    st, msg = proofer.check_size(info, SPEC, PANEL_A)
+    assert st == "WARN" and "no bleed detected" in msg
+
+
+def test_size_raster_with_bleed_passes():
+    info = {"kind": "raster", "px": (5100, 10100), "dpi": 50}  # 102 x 202 in
+    st, msg = proofer.check_size(info, SPEC, PANEL_A)
+    assert st == "PASS"
+
+
+def test_fix_instructions_no_bleed_warn_gets_entry():
+    results = {"size": ("WARN", '100.00" x 200.00" (media (no TrimBox)) matches trim size '
+                                '(full trim) but no bleed detected (no TrimBox set) — '
+                                'add 1" bleed per side')}
+    fixes = proofer.fix_instructions(results, {}, SPEC, PANEL_A)
+    assert len(fixes) == 1 and fixes[0]["check"] == "size" and fixes[0]["severity"] == "WARN"
+    assert 'Add 1" bleed' in fixes[0]["text"]
+    assert '102"' in fixes[0]["text"] and '202"' in fixes[0]["text"]
+
+
+def test_fix_instructions_raster_cannot_verify_warn_has_no_bleed_entry():
+    # the 'cannot verify finished size' WARN is not a bleed finding
+    results = {"size": ("WARN", "500x500px, no embedded size/DPI - cannot verify finished size")}
+    assert proofer.fix_instructions(results, {}, SPEC, PANEL_A) == []
+
+
 # ---------- fix-it instructions (Feature 3) ----------
 PANEL = SPEC["panels"][0]   # Wall A: 100 x 200, bleed 1, scale 0.5
 

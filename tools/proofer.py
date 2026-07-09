@@ -394,6 +394,18 @@ def analyze_raster(path):
 
 
 # ---------- checks ----------
+def _bare_trim_scale(label, sc):
+    """(is_bare_trim, matched_scale) for a size_match label. Bare-trim labels
+    ('full trim' / 'half trim', possibly '(rotated)') mean the file is exactly
+    finished size - i.e. it contains NO bleed unless the boxes prove otherwise."""
+    base = (label or "").split(" (")[0]
+    if base == "full trim":
+        return True, 1.0
+    if base == "half trim":
+        return True, sc
+    return False, (sc if base.startswith("half") else 1.0)
+
+
 def check_size(info, spec, p):
     expected, b, sc = expected_sizes(spec, p)
     if info["kind"] == "pdf":
@@ -410,6 +422,17 @@ def check_size(info, spec, p):
             return "FAIL", (f'{size_txt}{" matches " + m if m else ""}, but ' + "; ".join(bad_pages) +
                             ' - no expected size matches (submit one panel per file)')
         if m:
+            bare, mscale = _bare_trim_scale(m, sc)
+            if bare:
+                eb = b * mscale
+                margin = info.get("marks_margin_in")
+                # evidence of bleed = a TrimBox whose media margin covers the
+                # expected (scaled) bleed; otherwise the cut will show white edges
+                if margin is None or margin < eb - TOL:
+                    why = (f'media extends only {margin:g}" past trim' if margin is not None
+                           else "no TrimBox set")
+                    return "WARN", (f'{size_txt} matches trim size ({m}) but no bleed detected '
+                                    f'({why}) — add {eb:g}" bleed per side')
             extra = "" if info["trim_in"] else "  - no TrimBox set, could not isolate bleed"
             return "PASS", f'{size_txt} matches {m}{extra}'
         return "FAIL", f'{size_txt} - expected one of: ' + "; ".join(f'{k} {w:.2f}x{h:.2f}' for k, (w, h) in expected.items())
@@ -419,6 +442,12 @@ def check_size(info, spec, p):
             w_in, h_in = px / info["dpi"], py / info["dpi"]
             m = size_match(w_in, h_in, expected)
             if m:
+                bare, mscale = _bare_trim_scale(m, sc)
+                if bare:
+                    eb = b * mscale
+                    return "WARN", (f'{w_in:.2f}" x {h_in:.2f}" at {info["dpi"]} dpi matches trim '
+                                    f'size ({m}) but no bleed detected (raster canvas is exactly '
+                                    f'finished size) — add {eb:g}" bleed per side')
                 return "PASS", f'{w_in:.2f}" x {h_in:.2f}" at {info["dpi"]} dpi matches {m}'
             return "FAIL", f'{w_in:.2f}" x {h_in:.2f}" at {info["dpi"]} dpi - no panel-size match'
         return "WARN", f'{px}x{py}px, no embedded size/DPI - cannot verify finished size (ask for a sized PDF)'
@@ -564,7 +593,7 @@ def fix_instructions(results, info, spec, panel):
     def add(check, status, text):
         fixes.append({"check": check, "severity": status, "text": text})
 
-    st = results.get("size", ("PASS", ""))[0]
+    st, sdetail = results.get("size", ("PASS", ""))
     if st == "FAIL":
         ftw, fth = exp["full trim"]
         fbw, fbh = exp["full + bleed"]
@@ -572,6 +601,13 @@ def fix_instructions(results, info, spec, panel):
         add("size", st,
             f'Resize to the panel. Finished (trim) size is {ftw:g}" × {fth:g}"; add {bleed:g}" bleed on every '
             f'side and deliver {fbw:g}" × {fbh:g}". (Half scale — {hbw:g}" × {hbh:g}" — is also accepted.)')
+    elif st == "WARN" and "no bleed detected" in sdetail:
+        fbw, fbh = exp["full + bleed"]
+        hbw, hbh = exp["half + bleed"]
+        add("size", st,
+            f'Add {bleed:g}" bleed on every side — the file matches the finished (trim) size but includes '
+            f'no bleed, which risks white edges at the cut. Extend the artwork past the trim and deliver '
+            f'{fbw:g}" × {fbh:g}" (half-scale files: {hbw:g}" × {hbh:g}").')
 
     st, cmsg = results.get("color", ("PASS", ""))
     if st == "FAIL":

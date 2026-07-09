@@ -238,6 +238,20 @@ def test_resolution_grades_worst_axis(tmp_path):
     assert proofer.check_resolution(info)[0] == "FAIL"
 
 
+# ---------- P0-4: bleed presence (end-to-end) ----------
+def test_zero_bleed_trim_size_pdf_gets_review_and_fix_entry(tmp_path):
+    objs = catalog_and_pages() + [
+        page((100 * 72, 200 * 72), "<< >>", "4 0 R"),  # media == exact trim size
+        stream("", "1 0 0 0 k 0 0 7200 14400 re f"),
+    ]
+    res = proofer.run_checks(build_pdf(tmp_path / "Wall_A_notrim.pdf", objs), SPEC, "Wall A")
+    st, msg = res["results"]["size"]
+    assert st == "WARN" and "no bleed detected" in msg
+    assert res["verdict"] == "REVIEW"
+    size_fixes = [f for f in res["fixes"] if f["check"] == "size"]
+    assert size_fixes and "bleed" in size_fixes[0]["text"]
+
+
 # ---------- P0-2: all pages analyzed, not just page 1 ----------
 def two_page_pdf(tmp_path):
     """Page 1: clean CMYK at full+bleed size. Page 2: wrong-sized with an RGB

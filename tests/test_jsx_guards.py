@@ -77,3 +77,15 @@ def test_jsx_continuous_oversize_message_matches_the_flag():
     assert 'p.oversize_mode === "continuous"' in src
     assert "printed as ONE continuous piece" in src
     assert "tile/seam separately" in src                    # non-continuous keeps its wording
+
+
+def test_jsx_mirrors_side_b():
+    src = _jsx()
+    assert "var mirrored = (sIdx === 1);" in src            # Side B of a double-sided panel
+    # zones and door_marks mirror x -> w - x - zw; the door hand flips
+    assert "panel.w - zn.x - zn.w" in src
+    assert "panel.w - dmXin - dmWin" in src
+    assert 'mirrored ? ((p.door === "left") ? "right" : "left") : p.door' in src
+    # zones/door_marks calls actually receive the flag
+    assert "drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored)" in src
+    assert "drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored)" in src

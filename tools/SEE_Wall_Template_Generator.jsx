@@ -207,13 +207,18 @@ function drawDoor(layer, labelLayer, side, panel, trimLeftXpt, trimBottomYpt) {
   smallText(labelLayer, dLeft + sPt(2), dTop - sPt(2), "DOOR (" + side + ") - cut + handle/lock holes", 18, C_DOOR);
 }
 
-// Keep-clear / live-area rectangles marked on the panel.
-function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
+// Keep-clear / live-area rectangles marked on the panel. `mirrored` (Side B of
+// a double-sided panel, seen from the back) flips each zone's x to w - x - zw.
+// Interior zones (fridge/shelf keep-clears) are mirrored onto Side B by DEFAULT:
+// over-marking a keep-clear beats printing art over hardware. Follow-up noted:
+// a per-zone `sides` field could let a zone opt out of one side.
+function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt, mirrored) {
   if (!panel.zones) return;
   for (var z = 0; z < panel.zones.length; z++) {
     var zn  = panel.zones[z];
     var col = (zn.kind === "live") ? C_LIVE : C_KEEP;
-    var zLeft = trimLeftXpt + sPt(zn.x);
+    var znXin = mirrored ? (panel.w - zn.x - zn.w) : zn.x;
+    var zLeft = trimLeftXpt + sPt(znXin);
     var zTop  = trimBottomYpt + sPt(zn.y) + sPt(zn.h);
     strokeRect(zoneLayer, zTop, zLeft, sPt(zn.w), sPt(zn.h), col, 2, true);
     if (zn.label) smallText(labelLayer, zLeft + sPt(1.5), zTop - sPt(1.5), zn.label, 18, col);
@@ -226,20 +231,26 @@ function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
 // lock holes at DOOR.edge_offset_in from that latch edge; without it only the
 // opening is marked ("leave it one graphic, mark where the doors are").
 // Geometry mirrors preview_templates.py's door_marks loop term-for-term so the
-// production template can never disagree with the client template.
-function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
+// production template can never disagree with the client template. `mirrored`
+// (Side B) flips each opening's x to w - x - dmw and swaps the latch side.
+function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt, mirrored) {
   if (!panel.door_marks) return;
   var hTrimPt = sPt(panel.h);
   for (var d = 0; d < panel.door_marks.length; d++) {
     var dm = panel.door_marks[d];
     var dmWin  = (dm.w != null) ? dm.w : DOOR.panel_w_in;
     var dmXin  = (dm.x != null) ? dm.x : 0;
+    var dmSide = dm.side;
+    if (mirrored) {
+      dmXin = panel.w - dmXin - dmWin;
+      if (dmSide === "left") dmSide = "right";
+      else if (dmSide === "right") dmSide = "left";
+    }
     var dmLeft = trimLeftXpt + sPt(dmXin);
     var dmW    = sPt(dmWin);
     var dmTop  = trimBottomYpt + hTrimPt;
     strokeRect(doorLayer, dmTop, dmLeft, dmW, hTrimPt, C_DOOR, 2, true);
     smallText(labelLayer, dmLeft + sPt(1.5), dmTop - sPt(1.5), dm.label || "DOOR", 18, C_DOOR);
-    var dmSide = dm.side;
     if (dmSide === "left" || dmSide === "right") {
       var cx = (dmSide === "right") ? (dmLeft + dmW - sPt(DOOR.edge_offset_in))
                                     : (dmLeft + sPt(DOOR.edge_offset_in));
@@ -323,6 +334,9 @@ else {
     for (var sIdx = 0; sIdx < sides.length; sIdx++) {
       var sideName = sides[sIdx];
       var displayName = p.name + (sideName ? " - " + sideName : "");
+      // Side B is the same physical wall seen from the BACK: door hand, zone x
+      // positions, and door_marks all mirror left<->right (x -> w - x - zw).
+      var mirrored = (sIdx === 1);
 
       var wTrimPt = sPt(p.w);
       var hTrimPt = sPt(p.h);
@@ -390,15 +404,16 @@ else {
       var trimBottomYpt = abTop - bleedPt - hTrimPt;
 
       // Keep-clear / live zones (fridge, glass display, TVs, shelves, ...)
-      drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt);
+      drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored);
 
-      // Door cut + hardware (only if flagged)
+      // Door cut + hardware (only if flagged); Side B gets the mirrored hand
       if (p.door === "left" || p.door === "right") {
-        drawDoor(lDoor, lLabel, p.door, p, trimLeftXpt, trimBottomYpt);
+        var doorSide = mirrored ? ((p.door === "left") ? "right" : "left") : p.door;
+        drawDoor(lDoor, lLabel, doorSide, p, trimLeftXpt, trimBottomYpt);
       }
 
       // Marked door openings along one long graphic (door_marks)
-      drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt);
+      drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored);
 
       // Label (just inside the top-left, below the bleed) — scaled to fit the panel
       addLabel(lLabel, abLeft + bleedPt + sPt(2), abTop - bleedPt - sPt(2), p, displayName,

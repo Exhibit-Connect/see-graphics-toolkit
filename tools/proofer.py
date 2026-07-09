@@ -886,17 +886,26 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
 
 
 def find_default_spec():
-    """Locate a booth_spec*.json when --spec isn't given: cwd first, then an
-    examples/ folder next to or above this script. Lets the tools work from
-    the repo root regardless of where the spec lives."""
+    """Locate the booth_spec*.json when --spec isn't given - CLIENT-FACING
+    rules (proofer + make_proof share this): only the current directory is
+    searched, the chosen file is always announced, ambiguity refuses, and
+    there is NO examples/ fallback. The old silent alphabetically-first pick
+    (falling back to the tracked example booth) meant artwork could be
+    preflighted - and PASS - against the WRONG booth."""
     import glob
-    here = os.path.dirname(os.path.abspath(__file__))
-    for d in (os.getcwd(), os.path.join(here, "..", "examples"),
-              os.path.join(os.getcwd(), "examples"), here):
-        hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
-        if hits:
-            return hits[0]
-    return "booth_spec.json"
+    hits = sorted(glob.glob(os.path.join(os.getcwd(), "*booth_spec*.json")))
+    if len(hits) > 1:
+        print("Multiple booth specs found here — pass --spec to pick one explicitly:",
+              file=sys.stderr)
+        for h in hits:
+            print(f"  {h}", file=sys.stderr)
+        sys.exit(2)
+    if not hits:
+        print("No booth spec found in the current directory — pass "
+              "--spec path/to/booth_spec.json", file=sys.stderr)
+        sys.exit(2)
+    print(f"Using booth spec: {hits[0]}")
+    return hits[0]
 
 
 def main():

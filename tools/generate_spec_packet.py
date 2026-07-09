@@ -113,14 +113,10 @@ def cover_bg_data_uri():
 
 
 def find_default_spec():
-    import glob
-    here = os.path.dirname(os.path.abspath(__file__))
-    for d in (os.getcwd(), os.path.join(here, "..", "examples"),
-              os.path.join(os.getcwd(), "examples"), here):
-        hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
-        if hits:
-            return hits[0]
-    return "booth_spec.json"
+    """Same demo-friendly discovery as preview_templates: announce the chosen
+    spec, refuse ambiguity, keep (but loudly flag) the examples/ fallback."""
+    import preview_templates
+    return preview_templates.find_default_spec()
 
 
 def esc(v):

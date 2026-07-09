@@ -37,11 +37,26 @@ DOOR_DEFAULT = {
 
 
 def find_default_spec():
+    """Booth spec auto-discovery for the DEMO-friendly tools (previews, spec
+    packet): cwd first; ambiguity refuses; the examples/ fallback is kept for
+    demo use but announced LOUDLY (the client-facing tools - proofer,
+    make_proof - refuse instead: see proofer.find_default_spec)."""
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (os.getcwd(), os.path.join(here, "..", "examples"),
               os.path.join(os.getcwd(), "examples"), here):
         hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
+        if len(hits) > 1:
+            print("Multiple booth specs found — pass an explicit spec path to pick one:",
+                  file=sys.stderr)
+            for h in hits:
+                print(f"  {h}", file=sys.stderr)
+            sys.exit(2)
         if hits:
+            if os.path.abspath(d) != os.path.abspath(os.getcwd()):
+                print(f"⚠  Using booth spec: {hits[0]} (DEMO fallback — this is NOT "
+                      f"your booth; pass the real spec path)", file=sys.stderr)
+            else:
+                print(f"Using booth spec: {hits[0]}")
             return hits[0]
     return "booth_spec.json"
 
@@ -222,7 +237,11 @@ def main():
     spec_path = files[0] if files else find_default_spec()
     spec = json.load(open(spec_path))
     if not out_base:
-        out_base = "templates_preview"
+        # derive from the spec filename so two booths' previews never
+        # overwrite each other's fixed 'templates_preview.svg/png'
+        out_base = os.path.splitext(os.path.basename(spec_path))[0] + "_preview"
+    job = (spec.get("job", {}) or {}).get("name", "Booth")
+    print(f"Spec: {spec_path}  ·  job: {job}")
     svg_path = os.path.abspath(out_base + ".svg")
     png_path = os.path.abspath(out_base + ".png")
     svg, n = build_svg(spec)

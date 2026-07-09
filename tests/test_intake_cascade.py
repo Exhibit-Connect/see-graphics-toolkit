@@ -22,6 +22,9 @@ import intake
 def _no_live_network(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HOME", str(tmp_path / "no-home"))
+    # checkout-resident key files (tools/ and repo root, derived from __file__)
+    # must be neutralized too - a real key in the checkout is legitimate
+    monkeypatch.setattr(ai_client, "__file__", str(tmp_path / "no-home" / "tools" / "ai_client.py"))
     assert ai_client.available() is False
 
 

@@ -21,6 +21,9 @@ def _no_live_network(monkeypatch, tmp_path):
     accidental use of the real urlopen would still need a key it can't find."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # checkout-resident key files (tools/ and repo root, derived from __file__)
+    # must be neutralized too - a real key in the checkout is legitimate
+    monkeypatch.setattr(ai_client, "__file__", str(tmp_path / "home" / "tools" / "ai_client.py"))
     monkeypatch.setattr(ai_client, "_cwd_notice_shown", False)
     assert ai_client.available() is False
 

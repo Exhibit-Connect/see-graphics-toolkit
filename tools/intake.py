@@ -7,8 +7,9 @@ missed - regardless of which 3D designer or software produced it.
 
 Handles both handoff styles:
   * PDF export (the placement / dimensions package)
-  * native files that are PDF-compatible (.ai, .eps)
-  (a true non-PDF native -> export a PDF first; message shown.)
+  * native files that carry PDF-compatible content (.ai, and .eps saved with a
+    PDF stream). A PostScript-only .eps/.ai cannot be parsed - the tool says so
+    and asks for a PDF export instead of dumping a traceback.
 
 Two passes:
   1. DETERMINISTIC (always, offline): pulls panel names + sizes from the
@@ -27,14 +28,17 @@ text pass finds nothing (a visual handoff), the AI-read panels SEED the draft -
 each flagged needs_confirm, with a size only where one is actually printed.
 
 Usage:
-    python3 intake.py <handoff.pdf|.ai|.eps> [--job "Name"] [--ai] [--out file.json] [--max-pages N]
+    python3 intake.py <handoff.pdf|.ai|.eps> [--job "Name"] [--ai] [--out file.json]
+        [--max-pages N] [--force]
 
 All pages are rendered/OCR'd by default (--max-pages caps it, and the skip is
 disclosed). Any page Ghostscript/tesseract could not process is reported in the
 printed summary, the review's "Tool warnings" section and _intake.warnings -
-never silently dropped.
+never silently dropped. Re-running refuses to overwrite an existing draft or
+review (a designer may have hand-confirmed them) unless --force, or --out for
+an explicitly named draft.
 """
-import json, sys, os, re, subprocess, tempfile, shutil
+import argparse, json, sys, os, re, subprocess, tempfile, shutil
 
 PDF_EXT = (".pdf", ".ai", ".eps")
 
@@ -505,33 +509,53 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
     return "\n".join(lines) + "\n"
 
 
-def main():
-    args = sys.argv[1:]
-    use_ai = "--ai" in args
-    args = [a for a in args if a != "--ai"]
-    job, out, max_pages = None, None, None
-    files = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--job":
-            job = args[i + 1]; i += 2
-        elif args[i] == "--out":
-            out = args[i + 1]; i += 2
-        elif args[i] == "--max-pages":
-            max_pages = int(args[i + 1]); i += 2
-        else:
-            files.append(args[i]); i += 1
-    if not files:
-        print("usage: python3 intake.py <handoff.pdf|.ai|.eps> [--job \"Name\"] [--ai] [--out file.json] [--max-pages N]")
-        return
-    src = files[0]
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="intake.py",
+        description="Turn a 3D handoff (PDF / PDF-compatible .ai/.eps) into a draft "
+                    "booth-spec JSON + a review checklist a human signs off.")
+    ap.add_argument("handoff", help="handoff file (.pdf, .ai or .eps)")
+    ap.add_argument("--job", help="job name (default: derived from the file name)")
+    ap.add_argument("--out", help="draft spec output path (default: booth_spec_<job>_DRAFT.json)")
+    ap.add_argument("--ai", action="store_true", help="run the AI enrichment pass (OpenRouter)")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite an existing draft spec / review file")
+    ap.add_argument("--max-pages", type=int, default=None,
+                    help="cap AI/OCR page rendering (default: ALL pages; any skip is disclosed)")
+    a = ap.parse_args(argv)
+    use_ai, job, out, max_pages = a.ai, a.job, a.out, a.max_pages
+
+    src = a.handoff
     ext = os.path.splitext(src)[1].lower()
     if ext not in PDF_EXT:
         print(f"'{ext}' is not PDF-compatible. Export a PDF from the 3D/design tool and re-run on that.\n"
-              f"(PDF, .ai and .eps work directly.)")
-        return
+              f"(PDF, and .ai/.eps saved with PDF content, work directly.)")
+        sys.exit(2)
 
-    text, pages, n = read_pdf_text(src)
+    # Refuse to clobber a draft/review a designer may have hand-confirmed.
+    job_name = job or "Untitled job (from " + os.path.basename(src) + ")"
+    base = re.sub(r"[^A-Za-z0-9]+", "_", job_name).strip("_")
+    out = out or f"booth_spec_{base}_DRAFT.json"
+    review = f"{base}_intake_review.md"
+    if os.path.exists(out) and not (a.out or a.force):
+        print(f"{out} exists (it may carry hand-confirmed edits) — pass --out for a new "
+              f"path or --force to overwrite.")
+        sys.exit(1)
+    if os.path.exists(review) and not a.force:
+        print(f"{review} exists (it may carry hand-confirmed sign-offs) — pass --force to overwrite.")
+        sys.exit(1)
+
+    try:
+        text, pages, n = read_pdf_text(src)
+    except Exception as e:                      # pypdf.errors.PdfReadError + anything else
+        if ext in (".eps", ".ai"):
+            print(f"Could not parse '{os.path.basename(src)}' as a PDF ({type(e).__name__}: {e}).\n"
+                  f"This {ext} appears to be PostScript-only — export a PDF from the 3D/design "
+                  f"tool and re-run on that.")
+        else:
+            print(f"Could not read '{os.path.basename(src)}' as a PDF ({type(e).__name__}: {e}).\n"
+                  f"Export a fresh PDF from the 3D/design tool and re-run on that.")
+        sys.exit(2)
     panels, conflicts = parse_panels(text)
     conflicts += reconcile(panels, text)   # overview vs per-wall pages
 
@@ -548,7 +572,7 @@ def main():
     if re.search(r"\bdoor\b", text, re.I):
         extras.append("Door referenced — confirm which wall and side.")
 
-    job = job or "Untitled job (from " + os.path.basename(src) + ")"
+    job = job_name
     warnings = []
     ai = ai_enrich(src, n, panels, max_pages) if use_ai else None
     if isinstance(ai, dict):
@@ -604,12 +628,11 @@ def main():
                                   {"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
                     "notes": extras, "warnings": warnings, "ai": ai},
     }
-    base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_")
-    out = out or f"booth_spec_{base}_DRAFT.json"
-    json.dump(spec, open(out, "w"), indent=2)
-    review = f"{base}_intake_review.md"
-    open(review, "w").write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
-                                          panel_source, undimensioned, warnings))
+    with open(out, "w") as f:
+        json.dump(spec, f, indent=2)
+    with open(review, "w") as f:
+        f.write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
+                             panel_source, undimensioned, warnings))
 
     print(f"Read {n} pages of {os.path.basename(src)}")
     if panel_source == "ocr":

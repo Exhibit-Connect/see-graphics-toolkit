@@ -362,6 +362,68 @@ def test_main_surfaces_tool_warnings_in_review_and_spec(monkeypatch, tmp_path, c
     assert "tool warning" in capsys.readouterr().out
 
 
+# ---------- P1-3: friendly .eps error, overwrite guard, argparse ----------
+def test_postscript_eps_exits_with_export_guidance_not_traceback(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "art.eps").write_bytes(b"%!PS-Adobe-3.0 EPSF-3.0\nnewpath 0 0 moveto\nshowpage\n")
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "art.eps"])
+    with pytest.raises(SystemExit) as ei:
+        intake.main()
+    assert ei.value.code == 2
+    out = capsys.readouterr().out
+    assert "PostScript-only" in out and "export a PDF" in out
+    assert list(tmp_path.glob("booth_spec_*")) == []     # nothing half-written
+
+
+def test_unsupported_extension_exits_nonzero(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "handoff.docx").write_bytes(b"not a pdf")
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "handoff.docx"])
+    with pytest.raises(SystemExit) as ei:
+        intake.main()
+    assert ei.value.code == 2
+    assert "not PDF-compatible" in capsys.readouterr().out
+
+
+def test_rerun_refuses_to_overwrite_hand_edited_draft(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")
+    monkeypatch.setattr(intake, "ocr_pages", lambda *a, **k: ("", []))
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Guard Job"])
+    intake.main()
+    draft = tmp_path / "booth_spec_Guard_Job_DRAFT.json"
+    draft.write_text('{"hand": "edited"}')               # a designer confirmed things
+    with pytest.raises(SystemExit) as ei:
+        intake.main()
+    assert ei.value.code == 1
+    assert "--force" in capsys.readouterr().out
+    assert draft.read_text() == '{"hand": "edited"}'     # edit survived
+
+
+def test_force_overwrites_existing_outputs(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")
+    monkeypatch.setattr(intake, "ocr_pages", lambda *a, **k: ("", []))
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Guard Job"])
+    intake.main()
+    draft = tmp_path / "booth_spec_Guard_Job_DRAFT.json"
+    draft.write_text('{"hand": "edited"}')
+    monkeypatch.setattr(intake.sys, "argv",
+                        ["intake.py", "deck.pdf", "--job", "Guard Job", "--force"])
+    intake.main()                                        # no SystemExit
+    assert json.loads(draft.read_text()).get("_about")   # regenerated draft
+
+
+def test_trailing_flag_without_value_exits_2_with_usage(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job"])
+    with pytest.raises(SystemExit) as ei:
+        intake.main()                                    # argparse: no IndexError
+    assert ei.value.code == 2
+    assert "usage" in capsys.readouterr().err.lower()
+
+
 def test_ai_field_guesses_maps_finish_and_finishing_type():
     ai = {"_status": "live", "panels": [
         {"name": "E", "finish": "fabric", "finishing_type": "SEG"},

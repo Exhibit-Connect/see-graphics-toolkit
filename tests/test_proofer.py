@@ -308,6 +308,40 @@ def test_check_size_records_matched_label_for_marks_threading():
     assert info["size_match_label"] is None
 
 
+# ---------- P0-7: REVIEW verdict must render a report; batch must survive ----------
+def test_build_report_html_review_verdict_renders():
+    # used to raise KeyError('NEEDS REVIEW') and kill the whole batch
+    doc = proofer.build_report_html("art.pdf", "Wall A", "matched from filename",
+                                    {"size": ("WARN", "no bleed detected")}, "REVIEW")
+    assert "NEEDS REVIEW" in doc          # display label
+    assert "#F7941E" in doc               # orange REVIEW badge
+    # raw PASS/FAIL labels unchanged
+    assert "FAIL" in proofer.build_report_html("a.pdf", "A", "x", {}, "FAIL")
+
+
+def test_badge_has_review_entry():
+    assert proofer.BADGE["REVIEW"] == "#F7941E"
+
+
+def test_batch_crashing_file_does_not_abort_and_review_report_written(tmp_path, monkeypatch, capsys):
+    from PIL import Image
+    monkeypatch.chdir(tmp_path)
+    sp = tmp_path / "booth_spec.json"
+    sp.write_text(json.dumps(SPEC))
+    bad = tmp_path / "wall_a_bad.pdf"
+    bad.write_text("this is not a PDF")               # run_checks raises on it
+    good = tmp_path / "wall_a_art.png"                 # grayscale, no DPI ->
+    Image.new("L", (50, 50), 255).save(good)           # all-WARN -> REVIEW
+    monkeypatch.setattr(sys, "argv", ["proofer.py", str(bad), str(good), "--spec", str(sp)])
+    proofer.main()                                     # must not raise
+    out = capsys.readouterr().out
+    assert "could not process" in out                  # crash reported, batch continued
+    assert "REVIEW" in out
+    report = tmp_path / "wall_a_art_preflight.html"
+    assert report.exists(), "the good file's report must still be produced"
+    assert "NEEDS REVIEW" in report.read_text()
+
+
 # ---------- fix-it instructions (Feature 3) ----------
 PANEL = SPEC["panels"][0]   # Wall A: 100 x 200, bleed 1, scale 0.5
 

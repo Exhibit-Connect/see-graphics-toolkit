@@ -774,7 +774,11 @@ def marked_preview(path, info, spec, panel, fixes):
 
 # ---------- report ----------
 ORDER = ["size", "color", "resolution", "fonts", "marks", "spelling"]
-BADGE = {"PASS": "#2E9E40", "WARN": "#F7941E", "FAIL": RED, "NA": "#9a9a9a"}
+# REVIEW is a whole-file verdict (any WARN, no FAIL); the rest are per-check too
+BADGE = {"PASS": "#2E9E40", "WARN": "#F7941E", "FAIL": RED, "NA": "#9a9a9a",
+         "REVIEW": "#F7941E"}
+# display label for a verdict (REVIEW reads as NEEDS REVIEW on the report)
+VERDICT_LABEL = {"REVIEW": "NEEDS REVIEW"}
 
 
 # HTML->PDF lives in render.py now; kept as proofer.render_pdf so callers
@@ -784,6 +788,10 @@ render_pdf = render.html_to_pdf
 
 def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b64=None,
                       gaps=None):
+    """`verdict` is the RAW verdict (PASS/REVIEW/FAIL/...); the display label
+    and badge color are mapped here (a pre-mapped 'NEEDS REVIEW' used to
+    KeyError on the badge lookup and kill the whole batch)."""
+    label = VERDICT_LABEL.get(verdict, verdict)
     rows = ""
     for k in ORDER:
         if k not in results:
@@ -837,7 +845,7 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
       {branding.header_html("Artwork Preflight Report")}
       <h1>{html.escape(os.path.basename(fname))}</h1>
       <div class="meta">Panel: <b>{html.escape(panel)}</b> ({how}) &nbsp;·&nbsp; checked against the booth spec</div>
-      <div class="verdict">{verdict}</div>
+      <div class="verdict">{label}</div>
       {fix_html}
       {gaps_html}
       {mark_html}
@@ -880,50 +888,51 @@ def main():
 
     had_match_error = False
     for fname in files:
+        # one try around checks AND report building: one file's failure must
+        # never abort the batch (it used to silently drop every later file)
         try:
             r = run_checks(fname, spec, panel_arg)
+            if r and r.get("error"):
+                print(f"\n[{fname}] {r['error']}")
+                had_match_error = True
+                continue
+            if not r:
+                print(f"\n[{fname}] could not match to a panel - re-run with --panel NAME")
+                continue
+            panel, how, info, results, verdict = r["panel"], r["how"], r["info"], r["results"], r["verdict"]
+
+            print(f"\n=== {os.path.basename(fname)}  ->  panel {panel['name']} ({how})  ::  {verdict} ===")
+            for k in ORDER:
+                if k in results:
+                    st, msg = results[k]
+                    print(f"  [{st:4}] {k:11} {msg}")
+            fixes = r.get("fixes")
+            if fixes:
+                print("  what to change (client-ready):")
+                for f in fixes:
+                    print(f"    - {f['check']}: {f['text']}")
+            gaps = info.get("analysis_gaps") or []
+            if gaps:
+                print("  analysis gaps (parts of the file could not be fully checked):")
+                for g in gaps:
+                    print(f"    - {g}")
+
+            base = os.path.splitext(os.path.basename(fname))[0]
+            json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
+                       "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
+                       "fixes": fixes or [], "analysis_gaps": gaps},
+                      open(f"{base}_preflight.json", "w"), indent=2)
+            preview = marked_preview(fname, info, spec, panel, fixes)
+            hp = os.path.abspath(f"{base}_preflight.html")
+            open(hp, "w").write(build_report_html(fname, panel["name"], how, results, verdict,
+                                fixes=fixes, preview_b64=preview, gaps=gaps))
+            if render_pdf(hp, os.path.abspath(f"{base}_preflight.pdf")):
+                print(f"  report: {base}_preflight.pdf")
+            else:
+                print(f"  report: {base}_preflight.html (open + print to PDF)")
         except Exception as e:
-            print(f"\n[{fname}] could not read file: {e}")
+            print(f"\n[{fname}] could not process: {e} (continuing with remaining files)")
             continue
-        if r and r.get("error"):
-            print(f"\n[{fname}] {r['error']}")
-            had_match_error = True
-            continue
-        if not r:
-            print(f"\n[{fname}] could not match to a panel - re-run with --panel NAME")
-            continue
-        panel, how, info, results, verdict = r["panel"], r["how"], r["info"], r["results"], r["verdict"]
-
-        print(f"\n=== {os.path.basename(fname)}  ->  panel {panel['name']} ({how})  ::  {verdict} ===")
-        for k in ORDER:
-            if k in results:
-                st, msg = results[k]
-                print(f"  [{st:4}] {k:11} {msg}")
-        fixes = r.get("fixes")
-        if fixes:
-            print("  what to change (client-ready):")
-            for f in fixes:
-                print(f"    - {f['check']}: {f['text']}")
-        gaps = info.get("analysis_gaps") or []
-        if gaps:
-            print("  analysis gaps (parts of the file could not be fully checked):")
-            for g in gaps:
-                print(f"    - {g}")
-
-        base = os.path.splitext(os.path.basename(fname))[0]
-        json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
-                   "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
-                   "fixes": fixes or [], "analysis_gaps": gaps},
-                  open(f"{base}_preflight.json", "w"), indent=2)
-        preview = marked_preview(fname, info, spec, panel, fixes)
-        hp = os.path.abspath(f"{base}_preflight.html")
-        open(hp, "w").write(build_report_html(fname, panel["name"], how, results,
-                            "PASS" if verdict == "PASS" else ("NEEDS REVIEW" if verdict == "REVIEW" else "FAIL"),
-                            fixes=fixes, preview_b64=preview, gaps=gaps))
-        if render_pdf(hp, os.path.abspath(f"{base}_preflight.pdf")):
-            print(f"  report: {base}_preflight.pdf")
-        else:
-            print(f"  report: {base}_preflight.html (open + print to PDF)")
     if had_match_error:
         sys.exit(2)
 

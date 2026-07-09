@@ -603,23 +603,34 @@ def check_marks(info, spec=None, size_label=None):
     return "PASS", f'{margin}" beyond trim per side - no obvious marks'
 
 
-def check_spelling(info):
+def check_spelling(info, dict_path=None):
+    """Dictionary-based spell advisory. ALL-CAPS display type IS checked
+    (booth headlines are predominantly all-caps - 'EXIBIT SOLUTIONS' used to
+    sail through on the blanket isupper() skip); only short all-caps tokens
+    (<= 4 chars, likely acronyms like NASA) are skipped, and flagged caps
+    words are labeled 'may be an acronym'. The dictionary resolves as
+    `dict_path` arg > $SEE_DICT > the system word list; a MISSING dictionary
+    is a WARN (the check was silently NA before - a skipped check must be
+    visible on the report)."""
     text = info.get("text", "")
     if not text:
         if info["kind"] == "pdf" and info.get("fonts", 0) == 0:
             return "NA", "no readable text (already outlined) - send a pre-outline copy to spell-check"
         return "NA", "no readable text"
-    if not os.path.exists(DICT):
-        return "NA", "system dictionary unavailable"
-    words = set(w.strip().lower() for w in open(DICT, encoding="latin-1"))
-    seen, bad = set(), []
+    path = dict_path or os.environ.get("SEE_DICT") or DICT
+    if not os.path.exists(path):
+        return "WARN", (f"spelling NOT checked — dictionary unavailable ({path}); "
+                        f"install a word list or set SEE_DICT, and proofread manually")
+    words = set(w.strip().lower() for w in open(path, encoding="latin-1"))
+    seen, bad, checked = set(), [], 0
     for tok in re.findall(r"[A-Za-z][A-Za-z'\-]{2,}", text):
         low = tok.lower().strip("'-")
         if low in seen:
             continue
         seen.add(low)
-        if tok.isupper():            # skip acronyms / all-caps display type
+        if tok.isupper() and len(tok) <= 4:   # short all-caps: likely an acronym
             continue
+        checked += 1
         cands = {low, low.replace("'", ""), low.rstrip("s"), low + "s"}
         for suf in ("ed", "ing", "ly", "er", "es", "d"):   # tolerate common inflections
             if low.endswith(suf) and len(low) - len(suf) >= 3:
@@ -627,10 +638,10 @@ def check_spelling(info):
                 cands.add(low[:-len(suf)] + "e")
         if any(c in words for c in cands):
             continue
-        bad.append(tok)
+        bad.append(tok + (" (may be an acronym)" if tok.isupper() else ""))
     if bad:
         return "WARN", f'{len(bad)} word(s) to review (may include brand/proper names): ' + ", ".join(bad[:25])
-    return "PASS", "no obvious misspellings"
+    return "PASS", f"no obvious misspellings ({checked} distinct word(s) checked)"
 
 
 def run_checks(path, spec, panel_arg=None):
@@ -733,11 +744,16 @@ def fix_instructions(results, info, spec, panel):
 
     st, smsg = results.get("spelling", ("PASS", ""))
     if st == "WARN":
-        words = smsg.split(": ", 1)[-1] if ": " in smsg else ""
-        text = "Double-check spelling on the flagged words (some may be brand or proper names, which are fine)."
-        if words:
-            text += " Words to review: " + words
-        add("spelling", st, text)
+        if "dictionary unavailable" in smsg:
+            add("spelling", st,
+                "Spelling was NOT checked on this file (no dictionary available on the "
+                "checking machine) — proofread all text manually before approval.")
+        else:
+            words = smsg.split(": ", 1)[-1] if ": " in smsg else ""
+            text = "Double-check spelling on the flagged words (some may be brand or proper names, which are fine)."
+            if words:
+                text += " Words to review: " + words
+            add("spelling", st, text)
 
     return fixes
 

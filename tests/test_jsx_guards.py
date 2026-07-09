@@ -107,3 +107,17 @@ def test_jsx_mirrors_side_b():
     # zones/door_marks calls actually receive the flag
     assert "drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored)" in src
     assert "drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored)" in src
+
+
+def test_default_spec_is_a_labeled_synthetic_demo():
+    """P3-4: the Cancel-path DEFAULT_SPEC is a tiny synthetic demo, not an
+    embedded copy of the shipped example booth (the Mama's Creations copy had
+    already drifted from examples/1_booth_spec_example.json)."""
+    src = _jsx()
+    assert "built-in demo — not a real booth" in src
+    assert "Mama's Creations" not in src
+    # Cancel alert warns the demo is demo data only
+    assert "pick the real booth JSON for production" in src
+    # the demo stays tiny: exactly two panels inside the DEFAULT_SPEC literal
+    block = re.search(r"var DEFAULT_SPEC = \{.*?\n\};", src, re.S).group(0)
+    assert len(re.findall(r'name: "Demo_', block)) == 2

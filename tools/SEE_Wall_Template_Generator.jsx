@@ -17,7 +17,8 @@
    1. Open Adobe Illustrator (no document needs to be open).
    2. File > Scripts > Other Script...  and pick this file.
    3. When asked, choose the booth's  *.json  spec file.
-      (Cancel = use the built-in example, Mama's Creations.)
+      (Cancel = build a small built-in DEMO booth — demo data only,
+      never use it for production.)
    4. A new CMYK document is created with one artboard per panel.
 
    For a NEW job: copy the example JSON, edit its values, and load it.
@@ -45,38 +46,22 @@ function parseJSONsafe(text) {
   throw new Error("Booth spec is not valid JSON (failed safe-eval validation).");
 }
 
-// Built-in EXAMPLE booth (used only if you cancel the file picker).
-// For real jobs, load the booth's JSON instead of editing this.
+// Built-in DEMO booth (used only if you cancel the file picker).
+// This is SYNTHETIC data — not a real booth, not the shipped example job.
+// It exists so a designer can see what the generator produces (a plain wall
+// and a door wall with a keep-clear zone) without hunting for a file. For
+// real jobs, ALWAYS load the booth's JSON. A full worked example lives at
+// examples/1_booth_spec_example.json (kept in one place so it can't drift
+// from a copy embedded here).
 var DEFAULT_SPEC = {
-  job: { name: "Mama's Creations - IDDBA 2026 - 20x20 (built-in example)" },
+  job: { name: "built-in demo — not a real booth" },
   settings: { scale: 0.5, bleed_per_side_in: 1.0, safe_margin_in: 4.0 },
-  door_standard: {
-    panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
-    handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
-    lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
-  },
   panels: [
-    { name: "A", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", door: "left", note: "Closet wall - has the DOOR (handle on the left)" },
-    { name: "B", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "C", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "D", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "E1", w: 117.18, h: 114.7, finish: "TBD", sided: "single", note: "Curved glass display sits at the bottom - keep art clear of it",
-      zones: [ { x: 7.7775, y: 0, w: 101.625, h: 52.5, label: "CURVED GLASS DISPLAY / refrigerated storage - KEEP CLEAR (101.625 x 52.5)", kind: "keepclear" } ] },
-    { name: "E2", w: 117.18, h: 114.7, finish: "TBD", sided: "single" },
-    { name: "E_Soffit", w: 117.18, h: 9.76, finish: "TBD", sided: "single", note: "Soffit wrap strip" },
-    { name: "F1", w: 78.12, h: 134.26, finish: "TBD", sided: "single", note: "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
-      zones: [ { x: 0, y: 95.20, w: 78.12, h: 39.06, label: "LIVE GRAPHIC AREA (78.12 x 39.06)", kind: "live" },
-               { x: 0, y: 0,     w: 78.12, h: 95.20, label: "FRIDGE DISPLAY AREA - NO artwork", kind: "keepclear" } ] },
-    { name: "F2", w: 41.31, h: 134.26, finish: "TBD", sided: "single" },
-    { name: "F3", w: 78.12, h: 134.26, finish: "TBD", sided: "single", note: "BACK panel - full height. Shelves may be placed here (sizes TBD)." },
-    { name: "F4", w: 41.31, h: 134.26, finish: "TBD", sided: "single", note: "Shelves may be placed here (sizes TBD)." },
-    { name: "Counter_1", w: 58.5, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "Counter_2", w: 58.5, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "LCounter_Front", w: 100.0, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "LCounter_Side", w: 59.0, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "Fridge_Fabric_A", w: 39.06, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" },
-    { name: "Fridge_Fabric_B", w: 39.06, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" },
-    { name: "Fridge_Fabric_C", w: 78.12, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" }
+    { name: "Demo_Wall", w: 96, h: 96, finish: "demo", sided: "single",
+      note: "DEMO PANEL - not a real booth",
+      zones: [ { x: 12, y: 12, w: 36, h: 24, label: "DEMO KEEP-CLEAR (36 x 24)", kind: "keepclear" } ] },
+    { name: "Demo_Door_Wall", w: 78, h: 96, finish: "demo", sided: "single", door: "left",
+      note: "DEMO PANEL - shows the standard door (handle on the left)" }
   ]
 };
 
@@ -91,14 +76,16 @@ function loadSpec() {
     // automation/testing; when it's undefined the normal file picker shows.
     f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
           ? new File(SEE_SPEC_PATH)
-          : File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
+          : File.openDialog("Select the booth spec JSON  (Cancel = built-in DEMO, not for production)");
   } catch (ePick) {
     alert("Could not open a booth spec:\r" + ePick + "\r\rNothing was built.");
     return null;
   }
   if (f == null) {
-    // Explicit Cancel is the ONLY path to the built-in example.
-    DEFAULT_SPEC.__source = "built-in example (Mama's Creations)";
+    // Explicit Cancel is the ONLY path to the built-in demo.
+    alert("No booth spec chosen — building the 2-panel BUILT-IN DEMO.\r" +
+          "Demo data only — pick the real booth JSON for production.");
+    DEFAULT_SPEC.__source = "built-in demo — not a real booth";
     return DEFAULT_SPEC;
   }
   try {
@@ -119,7 +106,7 @@ function loadSpec() {
     return spec;
   } catch (e) {
     alert("Could not read that booth spec:\r" + f.fsName + "\r\r" + e +
-          "\r\rNothing was built. (The built-in example is used only when you press Cancel.)");
+          "\r\rNothing was built. (The built-in demo is used only when you press Cancel.)");
     return null;
   }
 }

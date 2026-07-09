@@ -428,6 +428,46 @@ def ai_seed_panels(ai):
     return seeded, undim
 
 
+def seed_panels(src, n_pages, text_panels, ai, max_pages=None, ocr_text_fn=None):
+    """The panel-seeding cascade (extracted from main(), P2-9, logic unchanged).
+
+    The text pass is the reliable floor. If it found NOTHING (a visual / non-text
+    handoff), prefer DETERMINISTIC OCR of the graphic key — same image -> same
+    panels every run — and fall back to the AI vision pass only if OCR recovers
+    nothing. OCR/AI panels are never trusted blindly: each is needs_confirm +
+    _source, and AI surfaces with no printed size are listed (never invented).
+
+    `ocr_text_fn` (defaults to ocr_pages; injectable for tests) must return
+    (text, warnings). Returns (spec_panels, panel_source, undimensioned,
+    conflicts, warnings) — panel_source is 'text', 'ocr' or 'ai-vision'."""
+    ocr_text_fn = ocr_text_fn or ocr_pages
+    panel_source, undimensioned = "text", []
+    conflicts, warnings = [], []
+    spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single")
+                   for p in text_panels]
+    if not text_panels:
+        ocr_panels, ocr_conflicts = [], []
+        ocr_text, ocr_warnings = ocr_text_fn(src, n_pages, max_pages)
+        warnings += ocr_warnings
+        if ocr_text:
+            ocr_panels, ocr_conflicts = parse_graphic_key(ocr_text)
+            if not ocr_panels:
+                ocr_panels, ocr_conflicts = parse_panels(ocr_text)
+        if ocr_panels:
+            # keep what the producing parser flagged + cross-check the OCR text's
+            # per-wall pages, exactly like the text pass (conflicts were discarded here)
+            conflicts += ocr_conflicts + reconcile(ocr_panels, ocr_text)
+            spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single",
+                                needs_confirm=True, _source="OCR of graphic key (CONFIRM label + size)")
+                           for p in ocr_panels]
+            panel_source = "ocr"
+        else:
+            seeded, undimensioned = ai_seed_panels(ai)
+            if seeded:
+                spec_panels, panel_source = seeded, "ai-vision"
+    return spec_panels, panel_source, undimensioned, conflicts, warnings
+
+
 def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_source="text", undimensioned=None,
                  warnings=None):
     undimensioned = undimensioned or []
@@ -580,35 +620,10 @@ def main(argv=None):
     if isinstance(ai, dict):
         warnings += ai.get("_warnings", [])
 
-    # The text pass is the reliable floor. If it found NOTHING (a visual / non-text
-    # handoff), seed the draft from the AI vision result so the handoff still yields a
-    # usable, flagged draft instead of an empty one. AI panels are never trusted blindly:
-    # each is needs_confirm, and surfaces with no printed size are listed (never invented).
-    panel_source, undimensioned = "text", []
-    spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single") for p in panels]
-    if not panels:
-        # Visual handoff (no extractable text). Prefer DETERMINISTIC OCR of the graphic
-        # key — same image -> same panels every run — and fall back to the AI vision pass
-        # only if OCR recovers nothing. Either way the panels stay needs_confirm.
-        ocr_panels, ocr_conflicts = [], []
-        ocr_text, ocr_warnings = ocr_pages(src, n, max_pages)
-        warnings += ocr_warnings
-        if ocr_text:
-            ocr_panels, ocr_conflicts = parse_graphic_key(ocr_text)
-            if not ocr_panels:
-                ocr_panels, ocr_conflicts = parse_panels(ocr_text)
-        if ocr_panels:
-            # keep what the producing parser flagged + cross-check the OCR text's
-            # per-wall pages, exactly like the text pass (conflicts were discarded here)
-            conflicts += ocr_conflicts + reconcile(ocr_panels, ocr_text)
-            spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single",
-                                needs_confirm=True, _source="OCR of graphic key (CONFIRM label + size)")
-                           for p in ocr_panels]
-            panel_source = "ocr"
-        else:
-            seeded, undimensioned = ai_seed_panels(ai)
-            if seeded:
-                spec_panels, panel_source = seeded, "ai-vision"
+    spec_panels, panel_source, undimensioned, seed_conflicts, seed_warnings = seed_panels(
+        src, n, panels, ai, max_pages)
+    conflicts += seed_conflicts
+    warnings += seed_warnings
 
     pending = ["job number (TBD — set it so proofs join the dashboard by number)",
                "finish/substrate per panel", "double-sided structures",

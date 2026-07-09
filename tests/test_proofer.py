@@ -5,6 +5,7 @@ They operate on plain dicts (a tiny booth spec, or a pre-built `info` dict),
 so no real PDF/image, Ghostscript, Chrome, or network is needed.
 """
 import json
+import os
 import sys
 
 import pytest
@@ -453,3 +454,44 @@ def test_fix_instructions_spelling_lists_words_from_message():
 
 def test_overlay_boxes_insets_by_fraction():
     assert proofer.overlay_boxes(100, 200, 0.1, 0.05) == (10, 10, 90, 190)
+
+
+# ---------- P0-10: marked_preview temp-file + gs hygiene ----------
+class _GsResult:
+    def __init__(self, rc):
+        self.returncode = rc
+
+
+def test_marked_preview_gs_failure_returns_none_not_the_decoy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    decoy = tmp_path / "_proof_mark.png"            # the old fixed cwd path
+    decoy.write_bytes(b"stale preview from another job")
+    monkeypatch.setattr(proofer.subprocess, "run", lambda *a, **k: _GsResult(1))
+    assert proofer.marked_preview("art.pdf", {}, SPEC, PANEL_A, []) is None
+    assert decoy.read_bytes() == b"stale preview from another job"
+
+
+def test_marked_preview_gs_rc0_no_output_returns_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(proofer.subprocess, "run", lambda *a, **k: _GsResult(0))
+    assert proofer.marked_preview("art.pdf", {}, SPEC, PANEL_A, []) is None
+
+
+def test_marked_preview_uses_only_this_runs_gs_output(tmp_path, monkeypatch):
+    from PIL import Image
+    monkeypatch.chdir(tmp_path)
+    decoy = tmp_path / "_proof_mark.png"
+    decoy.write_bytes(b"garbage - not a png")       # would crash PIL if ever opened
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        Image.new("RGB", (120, 60), "white").save(out)
+        return _GsResult(0)
+
+    monkeypatch.setattr(proofer.subprocess, "run", fake_run)
+    uri = proofer.marked_preview("art.pdf", {}, SPEC, PANEL_A, [])
+    assert uri and uri.startswith("data:image/png;base64,")
+    assert decoy.read_bytes() == b"garbage - not a png"   # never read or removed
+    # the unique temp file is removed by the finally block
+    leftovers = [p for p in os.listdir(tmp_path) if p.startswith("_proof_mark_")]
+    assert leftovers == []

@@ -22,7 +22,8 @@ docs/*.html
 *_preflight.*
 _intake_*.png
 _intake_ai_dryrun.json
-_proof_thumb.png
+_proof_thumb*.png
+_proof_mark*.png
 # demo rehearsal outputs — hold renamed copies of client (Syntron) data that dodge *Graphic_Dimensions*
 demo_scratch/
 # tool outputs generated into the repo root at runtime (canonical copies live in examples/)

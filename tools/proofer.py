@@ -21,7 +21,7 @@ branded PDF report via headless Chrome. Network not required.
 NOTE: spelling here uses the system word list as an offline stand-in - this
 is exactly where an AI/LLM spell+grammar pass plugs in when keys are available.
 """
-import json, sys, os, re, math, subprocess, html, base64
+import json, sys, os, re, math, subprocess, html, base64, tempfile
 import branding
 import render
 
@@ -757,10 +757,13 @@ def marked_preview(path, info, spec, panel, fixes):
     """Best-effort marked-up PNG (base64 data URI) of the artwork: a ribbon with
     the fix summary, plus — when the size is correct — the safe-area outline so a
     client sees where text must stay. Returns the data URI, or None if no preview
-    can be made. Writes only a throwaway temp PNG; the client's file is untouched.
-    Box math lives in `overlay_boxes` (pure + tested)."""
+    can be made. Writes only a throwaway UNIQUE temp PNG (a fixed cwd name was
+    racy across concurrent runs - a stale file could become the wrong artwork's
+    preview); the client's file is untouched. Box math lives in `overlay_boxes`
+    (pure + tested)."""
     ext = os.path.splitext(path)[1].lower()
-    tmp = os.path.abspath("_proof_mark.png")
+    fd, tmp = tempfile.mkstemp(prefix="_proof_mark_", suffix=".png")
+    os.close(fd)
     try:
         from PIL import Image, ImageDraw
         if ext in RASTER_EXT:
@@ -768,9 +771,10 @@ def marked_preview(path, info, spec, panel, fixes):
             if im.mode != "RGB":
                 im = im.convert("RGB")
         else:
-            subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
-                            "-dLastPage=1", "-o", tmp, path], capture_output=True)
-            if not os.path.exists(tmp):
+            os.remove(tmp)  # gs must CREATE the file - never trust a pre-existing one
+            p = subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
+                                "-dLastPage=1", "-o", tmp, path], capture_output=True)
+            if p.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
                 return None
             im = Image.open(tmp).convert("RGB")
         im.thumbnail((900, 900))

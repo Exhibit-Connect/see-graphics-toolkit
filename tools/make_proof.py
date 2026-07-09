@@ -28,7 +28,7 @@ Usage:
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
 """
-import sys, os, re, json, glob, base64, subprocess, datetime, html, functools
+import sys, os, re, json, glob, base64, subprocess, datetime, html, functools, tempfile
 import proofer
 try:
     import openpyxl
@@ -152,7 +152,16 @@ def cover_rows(items):
 
 
 def thumbnail(path, ext, tag=""):
-    out = os.path.abspath(f"_proof_thumb{tag}.png")
+    """Rasterize the artwork to a UNIQUE temp PNG and return its path, or None.
+
+    The output must be verifiably produced by THIS run (gs returncode 0 and a
+    non-empty file that gs itself created) - a fixed cwd name used to let a
+    stale PNG from a crashed run, or a concurrent run in the same directory,
+    become another job's artwork on a client sign-off proof. None means the
+    proof shows '(preview unavailable)' instead of a wrong image. The caller
+    removes the returned file when done."""
+    fd, out = tempfile.mkstemp(prefix=f"_proof_thumb{tag}_", suffix=".png")
+    os.close(fd)
     try:
         if ext in proofer.RASTER_EXT:
             from PIL import Image
@@ -162,10 +171,16 @@ def thumbnail(path, ext, tag=""):
             im.thumbnail((1000, 1000))
             im.save(out)
         else:
-            subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
-                            "-dLastPage=1", "-o", out, path], capture_output=True)
-        return out if os.path.exists(out) else None
+            os.remove(out)  # gs must CREATE the file - never trust a pre-existing one
+            p = subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
+                                "-dLastPage=1", "-o", out, path], capture_output=True)
+            if p.returncode != 0:
+                raise RuntimeError(f"gs exited {p.returncode}")
+        if not (os.path.exists(out) and os.path.getsize(out) > 0):
+            raise RuntimeError("no thumbnail output produced")
+        return out
     except Exception:
+        _cleanup(out)
         return None
 
 
@@ -547,9 +562,11 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
             sys.exit(1)
 
     thumb = thumbnail(fname, ext)
-    meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
-    page = build_proof_html(job, res, spec, b64img(thumb), approve, meta)
-    _cleanup(thumb)
+    try:
+        meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
+        page = build_proof_html(job, res, spec, b64img(thumb), approve, meta)
+    finally:
+        _cleanup(thumb)
 
     base = re.sub(r"[^A-Za-z0-9]+", "_", os.path.splitext(os.path.basename(fname))[0]).strip("_")
     suffix = "_PROOF_APPROVED" if approve else "_PROOF"
@@ -602,9 +619,11 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
         print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel"); return
     items.sort(key=lambda it: panel_index.get(it["panel"]["name"], 999))
 
-    html_doc = build_job_html(job, spec, items, approve, base_meta)
-    for it in items:
-        _cleanup(it.get("_thumb"))
+    try:
+        html_doc = build_job_html(job, spec, items, approve, base_meta)
+    finally:
+        for it in items:
+            _cleanup(it.get("_thumb"))
 
     base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_") or "Job"
     hp = os.path.abspath(base + "_JOB_PROOF.html")

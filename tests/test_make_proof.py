@@ -5,6 +5,9 @@ unfinished values (the proof-standardization memo's "TBD" / "Name here"
 failures) from reaching a client. They operate on plain dicts - no PDF,
 Ghostscript, Chrome, openpyxl, or network needed.
 """
+import os
+import tempfile
+
 import pytest
 
 import make_proof as mp
@@ -81,6 +84,75 @@ def test_proof_readiness_clean_when_complete():
 def test_job_totals_counts_graphics_and_pieces():
     items = [{"panel": {"quantity": 2}}, {"panel": {"quantity": 1}}, {"panel": {}}]
     assert mp.job_totals(items) == (3, 4)          # 2 + 1 + default 1
+
+
+# ---------- P0-10: thumbnails must never embed a stale/wrong image ----------
+class _R:
+    def __init__(self, rc):
+        self.returncode = rc
+
+
+def test_thumbnail_gs_failure_returns_none_never_the_stale_decoy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    decoy = tmp_path / "_proof_thumb.png"           # the old fixed cwd path
+    decoy.write_bytes(b"stale image from another job")
+    monkeypatch.setattr(mp.subprocess, "run", lambda *a, **k: _R(1))
+    assert mp.thumbnail(str(tmp_path / "art.pdf"), ".pdf") is None
+    assert decoy.read_bytes() == b"stale image from another job"  # untouched, never returned
+
+
+def test_thumbnail_gs_rc0_but_no_output_returns_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mp.subprocess, "run", lambda *a, **k: _R(0))  # writes nothing
+    assert mp.thumbnail(str(tmp_path / "art.pdf"), ".pdf") is None
+
+
+def test_thumbnail_success_yields_unique_fresh_temp_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        with open(out, "wb") as f:
+            f.write(b"\x89PNG fresh render")
+        return _R(0)
+
+    monkeypatch.setattr(mp.subprocess, "run", fake_run)
+    a = mp.thumbnail("art.pdf", ".pdf")
+    b = mp.thumbnail("art.pdf", ".pdf")
+    try:
+        assert a and b and a != b                        # unique per run
+        assert os.path.basename(a) != "_proof_thumb.png"  # not the old fixed name
+        assert open(a, "rb").read() == b"\x89PNG fresh render"
+    finally:
+        for p in (a, b):
+            if p and os.path.exists(p):
+                os.remove(p)
+
+
+def test_single_proof_cleans_thumb_even_when_build_fails(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    res = {"panel": {"name": "F1", "w": 78, "h": 134, "finish": "Fabric"},
+           "how": "named explicitly", "info": {"kind": "pdf"},
+           "results": {"size": ("PASS", "ok")}, "verdict": "PASS", "fixes": []}
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: res)
+    created = []
+
+    def fake_thumb(path, ext, tag=""):
+        fd, out = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        created.append(out)
+        return out
+
+    monkeypatch.setattr(mp, "thumbnail", fake_thumb)
+
+    def boom(*a, **k):
+        raise RuntimeError("render blew up")
+
+    monkeypatch.setattr(mp, "build_proof_html", boom)
+    with pytest.raises(RuntimeError):
+        mp.build_single_proof("F1.pdf", {"panels": [res["panel"]]}, "Job", None,
+                              None, {}, None)
+    assert created and not os.path.exists(created[0])   # cleaned up in finally
 
 
 # ---------- P0-6: explicit --panel that matches nothing must error out ----------

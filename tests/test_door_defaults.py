@@ -70,7 +70,7 @@ def test_door_default_matches_the_jsx_fallback():
     jsx_path = os.path.join(os.path.dirname(os.path.abspath(pt.__file__)),
                             "SEE_Wall_Template_Generator.jsx")
     jsx = open(jsx_path, encoding="utf-8").read()
-    m = re.search(r"SPEC\.door_standard \|\| \{(.*?)\};", jsx, re.S)
+    m = re.search(r"SPEC\.door_standard\)?\s*\|\|\s*\{(.*?)\};", jsx, re.S)
     assert m, "could not find the .jsx DOOR fallback block"
     block = m.group(1)
 

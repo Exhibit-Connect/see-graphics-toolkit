@@ -27,15 +27,22 @@
 // ===================== JSON LOADER (do not edit) =====================
 function parseJSONsafe(text) {
   text = String(text);
-  if (typeof JSON !== "undefined" && JSON.parse) { return JSON.parse(text); }
+  // Strip a UTF-8 BOM and surrounding whitespace first - a BOM'd spec file is
+  // valid JSON to a human but would fail the Crockford validation regex below.
+  text = text.replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+  if (typeof JSON !== "undefined" && JSON.parse) {
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error("Booth spec is not valid JSON: " + e); }
+  }
   // Crockford safe-eval fallback for older ExtendScript engines
   if (/^[\],:{}\s]*$/.test(
         text.replace(/\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g, "@")
             .replace(/"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g, "]")
             .replace(/(?:^|:|,)(?:\s*\[)+/g, ""))) {
-    return eval("(" + text + ")");
+    try { return eval("(" + text + ")"); }
+    catch (e2) { throw new Error("Booth spec is not valid JSON: " + e2); }
   }
-  throw new Error("Booth spec is not valid JSON.");
+  throw new Error("Booth spec is not valid JSON (failed safe-eval validation).");
 }
 
 // Built-in EXAMPLE booth (used only if you cancel the file picker).
@@ -73,38 +80,59 @@ var DEFAULT_SPEC = {
   ]
 };
 
+// Returns the parsed spec, DEFAULT_SPEC ONLY on an explicit Cancel, or null on
+// ANY failure (missing file, unreadable file, bad JSON). A failure must ABORT
+// the run - falling back to the example here used to build 18 plausible
+// artboards for the WRONG booth, which is far worse than building nothing.
 function loadSpec() {
+  var f = null;
   try {
     // A preset SEE_SPEC_PATH lets the script run head-less (no dialog) for
     // automation/testing; when it's undefined the normal file picker shows.
-    var f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
-              ? new File(SEE_SPEC_PATH)
-              : File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
-    if (f) {
-      f.encoding = "UTF-8";
-      f.open("r");
-      var txt = f.read();
-      f.close();
-      var spec = parseJSONsafe(txt);
-      spec.__source = decodeURI(f.name);
-      return spec;
-    }
-  } catch (e) {
-    alert("Could not read that JSON - using the built-in example instead.\r\r" + e);
+    f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
+          ? new File(SEE_SPEC_PATH)
+          : File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
+  } catch (ePick) {
+    alert("Could not open a booth spec:\r" + ePick + "\r\rNothing was built.");
+    return null;
   }
-  DEFAULT_SPEC.__source = "built-in example (Mama's Creations)";
-  return DEFAULT_SPEC;
+  if (f == null) {
+    // Explicit Cancel is the ONLY path to the built-in example.
+    DEFAULT_SPEC.__source = "built-in example (Mama's Creations)";
+    return DEFAULT_SPEC;
+  }
+  try {
+    if (!f.exists) {
+      alert("Booth spec not found:\r" + f.fsName + "\r\rNothing was built.");
+      return null;
+    }
+    f.encoding = "UTF-8";
+    if (!f.open("r")) {
+      alert("Could not open the booth spec for reading:\r" + f.fsName +
+            "\r(" + f.error + ")\r\rNothing was built.");
+      return null;
+    }
+    var txt = f.read();
+    f.close();
+    var spec = parseJSONsafe(txt);
+    spec.__source = decodeURI(f.name);
+    return spec;
+  } catch (e) {
+    alert("Could not read that booth spec:\r" + f.fsName + "\r\r" + e +
+          "\r\rNothing was built. (The built-in example is used only when you press Cancel.)");
+    return null;
+  }
 }
 
 // --------------------------- SETTINGS (from spec) -------------------
-var SPEC          = loadSpec();
-var JOB_NAME      = (SPEC.job && SPEC.job.name) ? SPEC.job.name : "Untitled job";
-var ST            = SPEC.settings || {};
+var SPEC          = loadSpec();   // null = abort (loadSpec already alerted why)
+var JOB_NAME      = (SPEC && SPEC.job && SPEC.job.name) ? SPEC.job.name : "Untitled job";
+var ST            = (SPEC && SPEC.settings) || {};
 var SCALE         = (ST.scale != null) ? ST.scale : 0.5;
 var BLEED_PER_SIDE = (ST.bleed_per_side_in != null) ? ST.bleed_per_side_in : 1.0;
 var SAFE_MARGIN   = (ST.safe_margin_in != null) ? ST.safe_margin_in : 4.0;
-var PANELS        = SPEC.panels || [];
-var DOOR          = SPEC.door_standard || {
+var PANELS        = (SPEC && SPEC.panels) || [];
+var DOOR          = (SPEC && SPEC.door_standard) || {
   panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
   handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
   lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
@@ -234,7 +262,10 @@ function addLabel(layer, xPt, yPt, panel, displayName, maxWidthPt, maxHeightPt) 
 }
 
 // --------------------------- BUILD ----------------------------------
-if (!PANELS || PANELS.length === 0) { alert("No panels found in the booth spec. Check the JSON's 'panels' list."); }
+if (!SPEC) {
+  // Bad/unreadable spec: loadSpec already alerted the real error. Build NOTHING
+  // rather than templates for the wrong booth.
+} else if (!PANELS || PANELS.length === 0) { alert("No panels found in the booth spec. Check the JSON's 'panels' list."); }
 else {
   var doc = app.documents.add(DocumentColorSpace.CMYK, 1000, 1000);
   try { doc.rulerUnits = RulerUnits.Inches; } catch (e) {}

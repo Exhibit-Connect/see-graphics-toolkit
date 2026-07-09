@@ -5,6 +5,8 @@ client-presentation deck (cover / who-we-are / info / graphic-placement renderin
 / graphics-to-submit / how-to-build / artwork-guidelines / thank-you). These cover
 the deck framing, the dynamic content, and the graceful degradation of the official
 brand pages when the local-only assets/brand/ folder is absent."""
+import re
+
 import generate_spec_packet as gsp
 
 BASE = {"job": {"name": "Test", "client": "Acme", "show": "IMTS 2026",
@@ -205,8 +207,11 @@ def test_zone_heavy_booth_keeps_every_panel_exactly_once():
                                  {"x": 0, "y": 40, "w": 10, "h": 10, "kind": "keepclear", "label": "tv"}]}
                       for i in range(12)]
     html = gsp.build_html(many)
+    # count in markup only: base64 image payloads (brand assets, logo) can
+    # contain any 4-char run, so data: URIs are stripped before counting
+    markup = re.sub(r"data:[^\"']+", "", html)
     for i in range(12):
-        assert html.count(f"ZP{i:02d}") == 1                        # each panel once — never clipped/duplicated
+        assert markup.count(f"ZP{i:02d}") == 1                      # each panel once — never clipped/duplicated
     assert html.count('class="slide slide-doc"') >= 2               # split across slides
 
 

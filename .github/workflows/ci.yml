@@ -23,6 +23,7 @@ jobs:
   tier1:
     name: tier-1 tests (py${{ matrix.python-version }}, no system deps)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +41,7 @@ jobs:
   jsx-syntax:
     name: .jsx syntax gate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: node --check the Illustrator generator
@@ -52,24 +54,27 @@ jobs:
   tier2:
     name: tier-2 tests + example artifacts (Chrome/gs/tesseract)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install system dependencies
+        # No chromium here on purpose: on ubuntu-latest 'chromium-browser'
+        # is a snap shim whose install hangs on GitHub runners. The runner
+        # image ships google-chrome preinstalled; the resolve step below
+        # picks it up.
         run: |
           sudo apt-get update
-          sudo apt-get install -y ghostscript tesseract-ocr wamerican chromium-browser \
-            || sudo apt-get install -y ghostscript tesseract-ocr wamerican chromium
+          sudo apt-get install -y ghostscript tesseract-ocr wamerican
       - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
       - name: Resolve Chrome for the suite
-        # Prefer the apt/snap chromium the plan installs; fall back to the
-        # runner's preinstalled google-chrome (on some ubuntu-latest images
-        # 'chromium-browser' is a snap shim that can fail headless).
+        # Prefer the runner's preinstalled google-chrome; fall back to a
+        # chromium/chromium-browser binary if one happens to be on PATH.
         run: |
-          SEE_CHROME="$(command -v chromium-browser || command -v chromium || command -v google-chrome)"
+          SEE_CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           test -n "$SEE_CHROME"
           echo "resolved Chrome: $SEE_CHROME"
           echo "SEE_CHROME=$SEE_CHROME" >> "$GITHUB_ENV"

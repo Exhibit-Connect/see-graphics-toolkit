@@ -485,6 +485,8 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
         res = proofer.run_checks(fname, spec, panel_arg)
     except Exception as e:
         print("could not read file:", e); return
+    if res and res.get("error"):
+        print(res["error"]); sys.exit(2)
     if not res:
         print("could not match to a panel — re-run with --panel NAME"); return
     panel = res["panel"]
@@ -534,6 +536,8 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
             res = proofer.run_checks(fname, spec, None)
         except Exception as e:
             unmatched.append(f"{os.path.basename(fname)} ({e})"); continue
+        if res and res.get("error"):
+            unmatched.append(f"{os.path.basename(fname)} ({res['error']})"); continue
         if not res:
             unmatched.append(os.path.basename(fname)); continue
         panel = res["panel"]

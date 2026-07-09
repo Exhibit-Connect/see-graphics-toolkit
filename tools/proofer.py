@@ -37,22 +37,58 @@ def norm(s):
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 
+def _token_span_match(n, toks):
+    """True when normalized name `n` equals the concatenation of one or more
+    CONSECUTIVE whole filename tokens - i.e. the panel name appears at token
+    boundaries of the stem ('wall_a_final' matches 'Wall A'; 'revised' never
+    matches panel 'D'). Pure."""
+    for i in range(len(toks)):
+        acc = ""
+        for t in toks[i:]:
+            acc += t
+            if acc == n:
+                return True
+            if len(acc) >= len(n):
+                break
+    return False
+
+
 def find_panel(spec, fname, panel_arg):
+    """Match an artwork file to a spec panel.
+
+    Returns (panel, how) on a match. On failure returns (None, reason):
+    reason is an actionable error message when an explicit --panel matched
+    nothing (NEVER falls through to filename matching - the operator asked
+    for a specific panel) or when the filename matches several panels with
+    equal specificity; reason is None when the filename simply matches no
+    panel."""
     panels = spec.get("panels", [])
     if panel_arg:
         for p in panels:
             if norm(p["name"]) == norm(panel_arg):
                 return p, "named explicitly"
-    stem = norm(os.path.splitext(os.path.basename(fname))[0])
-    # longest panel-name that appears in the filename wins (avoids 'A' matching everything)
-    best = None
+        avail = ", ".join(str(p.get("name", "?")) for p in panels) or "(none)"
+        return None, f'no panel named "{panel_arg}" in the booth spec - available: {avail}'
+    stem = os.path.splitext(os.path.basename(fname))[0]
+    toks = [t.lower() for t in re.split(r"[^A-Za-z0-9]+", stem) if t]
+    matches = []
     for p in panels:
-        if norm(p["name"]) and norm(p["name"]) in stem:
-            if best is None or len(norm(p["name"])) > len(norm(best["name"])):
-                best = p
-    if best:
-        return best, "matched from filename"
-    return None, None
+        n = norm(p["name"])
+        if not n:
+            continue
+        # 1-2 char names (e.g. 'A', 'F1'... normalized) demand an exact token;
+        # longer names may span consecutive tokens ('wall' + 'ab')
+        if (n in toks) if len(n) <= 2 else _token_span_match(n, toks):
+            matches.append(p)
+    if not matches:
+        return None, None
+    best_len = max(len(norm(p["name"])) for p in matches)
+    best = [p for p in matches if len(norm(p["name"])) == best_len]
+    if len(best) > 1:
+        names = ", ".join(str(p["name"]) for p in best)
+        return None, (f"filename matches multiple panels with equal specificity ({names}) "
+                      f"- re-run with --panel NAME")
+    return best[0], "matched from filename"
 
 
 def unverified_panels(spec):
@@ -578,11 +614,14 @@ def check_spelling(info):
 
 def run_checks(path, spec, panel_arg=None):
     """Match file -> panel, analyze, run every check. Returns
-    {panel, how, info, results, verdict} or None if no panel matched.
+    {panel, how, info, results, verdict}; or {"error": msg} when the match
+    failed for a reason the operator must act on (explicit --panel not found,
+    ambiguous filename) - no checks are run in that case; or None when the
+    filename simply matched no panel.
     Shared by the CLI and by make_proof.py so the checks never diverge."""
     panel, how = find_panel(spec, path, panel_arg)
     if not panel:
-        return None
+        return {"error": how} if how else None
     ext = os.path.splitext(path)[1].lower()
     info = analyze_raster(path) if ext in RASTER_EXT else analyze_pdf(path)
     results = {"size": check_size(info, spec, panel), "color": check_color(info)}
@@ -839,11 +878,16 @@ def main():
         return
     spec = json.load(open(spec_path or find_default_spec()))
 
+    had_match_error = False
     for fname in files:
         try:
             r = run_checks(fname, spec, panel_arg)
         except Exception as e:
             print(f"\n[{fname}] could not read file: {e}")
+            continue
+        if r and r.get("error"):
+            print(f"\n[{fname}] {r['error']}")
+            had_match_error = True
             continue
         if not r:
             print(f"\n[{fname}] could not match to a panel - re-run with --panel NAME")
@@ -880,6 +924,8 @@ def main():
             print(f"  report: {base}_preflight.pdf")
         else:
             print(f"  report: {base}_preflight.html (open + print to PDF)")
+    if had_match_error:
+        sys.exit(2)
 
 
 if __name__ == "__main__":

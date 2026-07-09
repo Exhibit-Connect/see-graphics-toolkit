@@ -5,6 +5,8 @@ unfinished values (the proof-standardization memo's "TBD" / "Name here"
 failures) from reaching a client. They operate on plain dicts - no PDF,
 Ghostscript, Chrome, openpyxl, or network needed.
 """
+import pytest
+
 import make_proof as mp
 
 
@@ -79,6 +81,17 @@ def test_proof_readiness_clean_when_complete():
 def test_job_totals_counts_graphics_and_pieces():
     items = [{"panel": {"quantity": 2}}, {"panel": {"quantity": 1}}, {"panel": {}}]
     assert mp.job_totals(items) == (3, 4)          # 2 + 1 + default 1
+
+
+# ---------- P0-6: explicit --panel that matches nothing must error out ----------
+def test_build_single_proof_explicit_panel_not_found_exits(tmp_path, capsys):
+    spec = {"settings": {}, "panels": [{"name": "Wall A", "w": 10, "h": 20}]}
+    with pytest.raises(SystemExit) as ei:
+        mp.build_single_proof(str(tmp_path / "art.pdf"), spec, "Job", None,
+                              None, {}, "Wall_Z")
+    assert ei.value.code == 2
+    out = capsys.readouterr().out
+    assert 'no panel named "Wall_Z"' in out and "Wall A" in out
 
 
 def test_cover_rows_shapes_and_defaults():

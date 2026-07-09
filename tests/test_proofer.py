@@ -4,6 +4,11 @@ These cover panel matching and the size / color / resolution decision logic.
 They operate on plain dicts (a tiny booth spec, or a pre-built `info` dict),
 so no real PDF/image, Ghostscript, Chrome, or network is needed.
 """
+import json
+import sys
+
+import pytest
+
 import proofer
 
 
@@ -70,6 +75,63 @@ def test_find_panel_longest_filename_match_wins():
 
 def test_find_panel_no_match_returns_none():
     assert proofer.find_panel(SPEC, "random_artwork.pdf", None) == (None, None)
+
+
+# ---------- P0-6: unmatched --panel errors; token-boundary filename matching ----------
+LETTER_SPEC = {"settings": {}, "panels": [{"name": n, "w": 10, "h": 20}
+                                          for n in ("A", "B", "C", "D", "E", "F1")]}
+
+
+def test_find_panel_explicit_arg_not_found_never_falls_through():
+    # the filename would token-match panel A, but the operator asked for Wall_Z:
+    # silently checking a DIFFERENT panel is exactly the P0-6 bug
+    panel, why = proofer.find_panel(SPEC, "wall_a_final.pdf", "Wall_Z")
+    assert panel is None
+    assert 'no panel named "Wall_Z"' in why
+    assert "Wall A" in why and "Wall AB" in why  # lists the available names
+
+
+def test_run_checks_explicit_panel_not_found_runs_no_checks(tmp_path):
+    # the artwork file does not even exist: if any check ran we'd get an
+    # exception, so the clean error return proves checks never started
+    r = proofer.run_checks(str(tmp_path / "missing.pdf"), SPEC, "Wall_Z")
+    assert set(r) == {"error"}
+    assert 'no panel named "Wall_Z"' in r["error"]
+
+
+def test_find_panel_short_names_are_not_substring_matched():
+    # 'revised.pdf' used to match panel D (substring 'd'); 'logo_art.pdf' -> A
+    for fname in ("revised.pdf", "logo_art.pdf", "final_v2.pdf"):
+        assert proofer.find_panel(LETTER_SPEC, fname, None) == (None, None)
+
+
+def test_find_panel_token_matches_still_work():
+    panel, how = proofer.find_panel(LETTER_SPEC, "F1_art.pdf", None)
+    assert panel["name"] == "F1" and how == "matched from filename"
+    panel, how = proofer.find_panel(LETTER_SPEC, "wall_a_final.pdf", None)
+    assert panel["name"] == "A" and how == "matched from filename"
+
+
+def test_find_panel_multiword_name_spans_tokens():
+    panel, how = proofer.find_panel(SPEC, "wall_ab_v2.pdf", None)
+    assert panel["name"] == "Wall AB"
+
+
+def test_find_panel_equal_specificity_refuses():
+    panel, why = proofer.find_panel(LETTER_SPEC, "a_b_final.pdf", None)
+    assert panel is None
+    assert "equal specificity" in why and "--panel" in why
+
+
+def test_main_explicit_panel_not_found_exits_nonzero(tmp_path, monkeypatch, capsys):
+    sp = tmp_path / "booth_spec.json"
+    sp.write_text(json.dumps(SPEC))
+    monkeypatch.setattr(sys, "argv", ["proofer.py", str(tmp_path / "art.pdf"),
+                                      "--spec", str(sp), "--panel", "Wall_Z"])
+    with pytest.raises(SystemExit) as ei:
+        proofer.main()
+    assert ei.value.code == 2
+    assert 'no panel named "Wall_Z"' in capsys.readouterr().out
 
 
 def test_check_color_raster_modes():

@@ -131,38 +131,51 @@ def _run_chrome(args, out_path, complete_predicate, runner=subprocess.Popen):
     `complete_predicate` (structural completeness / not-an-error-page). The
     process is ALWAYS terminated (can't hang); on failure one line with the
     returncode and the tail of Chrome's stderr goes to stderr. `runner` is
-    injectable for tests (no Chrome needed)."""
-    proc = runner(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    deadline = time.monotonic() + _timeout_s()
-    ok = False
-    prev_size = None
-    while True:
-        rc = proc.poll()
-        if rc is not None:
-            ok = (rc == 0 and os.path.exists(out_path)
-                  and os.path.getsize(out_path) > MIN_BYTES)
-            break
-        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
-        if size > 0 and size == prev_size:
-            ok = True          # never-exiting Chrome: output present and stable
-            break
-        prev_size = size if size > 0 else None
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(0.5)
+    injectable for tests (no Chrome needed).
 
-    stderr_tail = b""
-    try:
-        proc.terminate()
+    Chrome's stderr goes to an unnamed TEMP FILE, not a pipe (P0-16): the pipe
+    was only drained AFTER the poll loop, so once Chrome chattered past the
+    ~64KB pipe buffer it blocked on the write and a render that would have
+    succeeded sat there until our timeout. A file has no backpressure; its
+    tail is read for the failure diagnostic and it is deleted on close."""
+    with tempfile.TemporaryFile(prefix="see_chrome_err_") as err_f:
+        proc = runner(args, stdout=subprocess.DEVNULL, stderr=err_f)
+        deadline = time.monotonic() + _timeout_s()
+        ok = False
+        prev_size = None
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                ok = (rc == 0 and os.path.exists(out_path)
+                      and os.path.getsize(out_path) > MIN_BYTES)
+                break
+            size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+            if size > 0 and size == prev_size:
+                ok = True          # never-exiting Chrome: output present and stable
+                break
+            prev_size = size if size > 0 else None
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+
         try:
-            _, err = proc.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            _, err = proc.communicate()
-        stderr_tail = err or b""
-    except Exception:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=3)     # reap only; stderr is the temp file
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+        stderr_tail = b""
         try:
-            proc.kill()
+            end = err_f.seek(0, os.SEEK_END)
+            err_f.seek(max(0, end - 500))
+            stderr_tail = err_f.read()
         except Exception:
             pass
 

@@ -43,15 +43,24 @@ class FakeProc:
         pass
 
     def communicate(self, timeout=None):
-        return b"", self._stderr
+        return None, None                       # stderr is a temp FILE, not a pipe
 
 
-def make_runner(payload, rc=0, captured=None):
+def make_runner(payload, rc=0, captured=None, stderr_payload=b"fake chrome stderr"):
     """Fake subprocess.Popen: writes `payload` (or nothing when None) to the
-    --print-to-pdf/--screenshot target, returns a FakeProc exiting with rc."""
+    --print-to-pdf/--screenshot target, returns a FakeProc exiting with rc.
+
+    P0-16: _run_chrome must hand the runner a real writable FILE for stderr —
+    never subprocess.PIPE (a pipe was drained only after the poll loop, so
+    Chrome blocked once it wrote past the ~64KB buffer). The fake asserts
+    that and writes `stderr_payload` there, like Chrome would."""
     def runner(args, stdout=None, stderr=None):
         if captured is not None:
             captured["args"] = list(args)
+        assert hasattr(stderr, "write") and hasattr(stderr, "fileno"), \
+            "stderr must be a real (temp) file, not subprocess.PIPE"
+        stderr.write(stderr_payload)
+        stderr.flush()
         out = next(a.split("=", 1)[1] for a in args
                    if a.startswith(("--print-to-pdf=", "--screenshot=")))
         if payload is not None:
@@ -280,3 +289,48 @@ def test_svg_px_size_reads_the_root_tag_only():
            'xmlns="http://www.w3.org/2000/svg">'
            '<rect width="400" height="300" fill="#fff"/></svg>')
     assert render.svg_px_size_from_text(svg) == (1290, 555)
+
+
+# ---- P0-16: >64KB of Chrome stderr must never deadlock the render ----
+
+def test_huge_stderr_success_no_deadlock(tmp_path, monkeypatch):
+    # a runner that floods stderr past the old ~64KB pipe buffer still
+    # succeeds (stderr lands in a temp file with no backpressure)
+    import time as _time
+    monkeypatch.setenv("SEE_CHROME", sys.executable)
+    out = tmp_path / "o.pdf"
+    t0 = _time.monotonic()
+    ok = render.html_to_pdf(_html(tmp_path), str(out),
+                            runner=make_runner(PDF_OK, rc=0,
+                                               stderr_payload=b"e" * 262144))
+    assert ok is True
+    assert _time.monotonic() - t0 < 10
+
+
+def test_huge_stderr_failure_surfaces_the_tail(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SEE_CHROME", sys.executable)
+    out = tmp_path / "o.pdf"
+    payload = b"n" * 262144 + b"THE-REAL-ERROR-AT-THE-END"
+    ok = render.html_to_pdf(_html(tmp_path), str(out),
+                            runner=make_runner(None, rc=1, stderr_payload=payload))
+    assert ok is False
+    err = capsys.readouterr().err
+    assert "returncode=1" in err
+    assert "THE-REAL-ERROR-AT-THE-END" in err          # tail, not the flood
+
+
+def test_real_subprocess_flooding_stderr_finishes_promptly(tmp_path, monkeypatch):
+    # end-to-end with a REAL child process: it writes 200KB to stderr, then
+    # the output PDF, then exits 0. With the old stderr=PIPE the child blocked
+    # at ~64KB and the render stalled to the timeout; now it must return True
+    # well inside the generous 60s budget.
+    import time as _time
+    monkeypatch.setenv("SEE_RENDER_TIMEOUT", "60")
+    out = tmp_path / "o.pdf"
+    code = ("import sys; sys.stderr.write('e' * 200000); sys.stderr.flush(); "
+            "open(sys.argv[1], 'wb').write(b'%PDF-1.4\\n' + b'0' * 2000 + b'\\n%%EOF\\n')")
+    t0 = _time.monotonic()
+    ok = render._run_chrome([sys.executable, "-c", code, str(out)],
+                            str(out), render._pdf_ok)
+    assert ok is True
+    assert _time.monotonic() - t0 < 20

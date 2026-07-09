@@ -140,7 +140,7 @@ function cmyk(c, m, y, k) {
   col.cyan = c; col.magenta = m; col.yellow = y; col.black = k;
   return col;
 }
-var C_BLEED = cmyk(70, 0, 0, 0);    // cyan   - bleed
+var C_BLEED = cmyk(100, 0, 0, 0);   // cyan   - bleed (process cyan, matches the previews' #00AEEF)
 var C_TRIM  = cmyk(0, 0, 0, 100);   // black  - trim (finished size)
 var C_SAFE  = cmyk(0, 100, 0, 0);   // magenta- visual safe area
 var C_KEEP  = cmyk(0, 55, 100, 0);  // orange - keep-clear (fixture / TV / shelf / fridge)
@@ -401,7 +401,8 @@ else {
       var safeW = wTrimPt - 2 * safePt;
       var safeH = hTrimPt - 2 * safePt;
       if (safeW > 0 && safeH > 0) {
-        strokeRect(lSafe, abTop - bleedPt - safePt, abLeft + bleedPt + safePt, safeW, safeH, C_SAFE, 1.5);
+        // dashed, matching the Python previews/client templates (key consistency)
+        strokeRect(lSafe, abTop - bleedPt - safePt, abLeft + bleedPt + safePt, safeW, safeH, C_SAFE, 1.5, true);
       }
 
       // Trim bottom-left corner (used by zones + door)

@@ -74,11 +74,16 @@ def fit_px(panel, settings, max_w=860, max_h=470):
 
 
 def scale_pct(scale):
-    """SEE build scale as a percent phrase, e.g. 0.5 -> 'built at ½ scale (print @200%)'."""
+    """SEE build scale as a percent phrase, e.g. 0.5 -> 'built at ½ scale (print @200%)'.
+    The print percentage is EXACT: integral scales print a whole number, others
+    two decimals (0.75 -> @133.33%, never a rounded-off @133% a vendor would
+    treat as literal)."""
     if not scale or scale == 1:
         return "full scale"
     frac = {0.5: "½", 0.25: "¼", 0.75: "¾"}.get(scale, f"{scale:g}×")
-    return f"built at {frac} scale (print @{round(100/scale)}%)"
+    pct = 100 / scale
+    pct_txt = f"{pct:g}" if float(pct).is_integer() else f"{pct:.2f}"
+    return f"built at {frac} scale (print @{pct_txt}%)"
 
 
 def caption_rows(panel, settings):
@@ -139,10 +144,13 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
                   for l, v in caption_rows(panel, st))
     continuous = is_continuous(panel)
     if oversized and not continuous:
-        art = (f'<div class="oversize">&#9888; This piece is too large for one template '
-               f'({html.escape(str(panel.get("w")))}" × {html.escape(str(panel.get("h")))}"). '
+        w, h = panel.get("w"), panel.get("h")
+        dims = (f' ({w:g}" × {h:g}")'
+                if isinstance(w, (int, float)) and isinstance(h, (int, float)) else "")
+        art = (f'<div class="oversize">&#9888; This piece is too large for one template{dims}. '
                f'It is printed in sections and seamed together — '
-               f'our team will handle the tiling. Build to the finished size + bleed listed, full resolution.</div>')
+               f'our team will handle the tiling. Build to the &ldquo;File size WITH bleed&rdquo; '
+               f'shown at right, full resolution.</div>')
     else:
         px = fit_px(panel, st)
         bleed = st.get("bleed_per_side_in", 1.0)

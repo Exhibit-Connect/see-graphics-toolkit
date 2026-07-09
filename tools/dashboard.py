@@ -18,6 +18,7 @@ proof_log.xlsx (where make_proof writes) plus any proof_log.xlsx found inside
 
 Free / zero-install: pure-Python HTML, optional PDF via headless Chrome.
 """
+import argparse
 import json, sys, os, glob, html, datetime
 import proofer
 import branding
@@ -372,21 +373,23 @@ def build_dashboard_html(rows, today=None, log_note=None):
     </body></html>"""
 
 
-def main():
-    args = sys.argv[1:]
-    jobs_dir = None
-    log_arg = None
-    want_pdf = False
-    i = 0
-    while i < len(args):
-        if args[i] == "--jobs-dir":
-            jobs_dir = args[i + 1]; i += 2
-        elif args[i] == "--log":
-            log_arg = args[i + 1]; i += 2
-        elif args[i] == "--pdf":
-            want_pdf = True; i += 1
-        else:
-            i += 1
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="dashboard.py",
+        description="Job status dashboard (HTML, --pdf for PDF) built from the "
+                    "booth files + the proof log.")
+    ap.add_argument("--jobs-dir", metavar="DIR",
+                    help="folder of job folders to scan for booth specs (and, "
+                         "recursively, proof logs)")
+    ap.add_argument("--log", metavar="PATH",
+                    help="explicit proof log to read (overrides discovery)")
+    ap.add_argument("--pdf", action="store_true", help="also render job_dashboard.pdf")
+    a = ap.parse_args(argv)
+    jobs_dir, log_arg, want_pdf = a.jobs_dir, a.log, a.pdf
+    if jobs_dir and not os.path.isdir(jobs_dir):
+        # the old parser scanned cwd instead - a typo'd path showed a plausible
+        # (wrong) board with the target jobs silently absent
+        sys.exit(f"jobs dir not found: {jobs_dir}")
     today = datetime.date.today()
     specs = [s for _, s in discover_specs(jobs_dir)]
     log_paths = find_logs(jobs_dir, log_arg)

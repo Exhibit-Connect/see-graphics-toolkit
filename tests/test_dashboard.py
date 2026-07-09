@@ -203,3 +203,18 @@ def test_dashboard_rows_stages_flags_and_urgency_sort():
     assert nod["stage"] == "Awaiting confirm"
     assert nod["days_to_due"] is None
     assert any("unverified" in f for f in nod["flags"])
+
+
+# ---------- P3-6: argparse CLI ----------
+def test_cli_unknown_flag_exits_2():
+    import pytest
+    with pytest.raises(SystemExit) as ei:
+        dashboard.main(["--frobnicate"])
+    assert ei.value.code == 2
+
+
+def test_cli_nonexistent_jobs_dir_exits_with_message(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit) as ei:
+        dashboard.main(["--jobs-dir", str(tmp_path / "no_such_dir")])
+    assert "jobs dir not found" in str(ei.value)

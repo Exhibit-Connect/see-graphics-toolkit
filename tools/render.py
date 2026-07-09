@@ -202,14 +202,19 @@ def html_to_pdf(html_path, pdf_path, runner=subprocess.Popen):
 
 
 def svg_px_size_from_text(svg_text, default=(1600, 900)):
-    """(width, height) in px for an SVG — from its width/height attrs, else its
-    viewBox's w/h, else `default`. Pure: this is the testable core of sizing the
-    PNG canvas to the SVG's OWN aspect ratio (so wide layouts aren't cropped)."""
-    mw = re.search(r'\bwidth="(\d+(?:\.\d+)?)(?:px)?"', svg_text)
-    mh = re.search(r'\bheight="(\d+(?:\.\d+)?)(?:px)?"', svg_text)
+    """(width, height) in px for an SVG — from the ROOT <svg> tag's
+    width/height attrs, else its viewBox's w/h, else `default`. Pure: this is
+    the testable core of sizing the PNG canvas to the SVG's OWN aspect ratio
+    (so wide layouts aren't cropped). Scoped to the root tag (P3-6): a root
+    width="100%" plus any numeric width= on an inner element (e.g. a <rect>)
+    used to size the canvas from that inner element."""
+    root = re.search(r"<svg\b[^>]*>", svg_text)
+    tag = root.group(0) if root else svg_text
+    mw = re.search(r'\bwidth="(\d+(?:\.\d+)?)(?:px)?"', tag)
+    mh = re.search(r'\bheight="(\d+(?:\.\d+)?)(?:px)?"', tag)
     if mw and mh:
         return max(1, round(float(mw.group(1)))), max(1, round(float(mh.group(1))))
-    vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)', svg_text)
+    vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)', tag)
     if vb:
         return max(1, round(float(vb.group(1)))), max(1, round(float(vb.group(2))))
     return default

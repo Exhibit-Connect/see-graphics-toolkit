@@ -99,25 +99,43 @@ def unverified_panels(spec):
     return [p.get("name", "?") for p in spec.get("panels", []) if p.get("needs_confirm")]
 
 
+def scale_word(sc):
+    """The label word for a build scale: 0.5 -> 'half', 0.25 -> 'quarter',
+    anything else '<sc:g>x' (a 0.75-scale spec used to be labeled 'half'). Pure."""
+    return {0.5: "half", 0.25: "quarter"}.get(sc, f"{sc:g}x")
+
+
 def expected_sizes(spec, p):
-    """All acceptable (w,h) in inches: full/half scale, trim and bleed-box."""
+    """All acceptable (w,h) in inches: full scale and (when settings.scale is a
+    real reduction) build scale, each as trim and bleed-box. Scaled candidates
+    are labeled with the actual scale word ('half trim', 'quarter + bleed', ...)
+    and are SKIPPED when scale is 1/absent — they'd duplicate the full-scale
+    entries under a misleading name."""
     b = spec.get("settings", {}).get("bleed_per_side_in", 1.0)
     sc = spec.get("settings", {}).get("scale", 0.5)
     w, h = p["w"], p["h"]
     out = {
         "full trim": (w, h),
         "full + bleed": (w + 2 * b, h + 2 * b),
-        "half trim": (w * sc, h * sc),
-        "half + bleed": ((w + 2 * b) * sc, (h + 2 * b) * sc),
     }
+    if sc not in (None, 1):
+        word = scale_word(sc)
+        out[f"{word} trim"] = (w * sc, h * sc)
+        out[f"{word} + bleed"] = ((w + 2 * b) * sc, (h + 2 * b) * sc)
     return out, b, sc
 
 
-def size_match(w_in, h_in, expected):
+def size_match(w_in, h_in, expected, sc=None):
+    """First expected-size label matching (w_in, h_in), allowing 90° rotation.
+    Per-candidate tolerance (P3-6): full-scale entries use TOL; scaled entries
+    use TOL*sc when `sc` is given — a flat TOL on a half-scale candidate
+    accepted twice the error at print size. Omitting `sc` keeps the legacy
+    flat-TOL behavior."""
     for label, (ew, eh) in expected.items():
-        if abs(w_in - ew) <= TOL and abs(h_in - eh) <= TOL:
+        tol = TOL if (sc in (None, 1) or label.startswith("full")) else TOL * sc
+        if abs(w_in - ew) <= tol and abs(h_in - eh) <= tol:
             return label
-        if abs(w_in - eh) <= TOL and abs(h_in - ew) <= TOL:
+        if abs(w_in - eh) <= tol and abs(h_in - ew) <= tol:
             return label + " (rotated)"
     return None
 
@@ -425,35 +443,38 @@ def analyze_raster(path):
     from PIL import Image
     im = Image.open(path)
     dpi = im.info.get("dpi")
+    # keep BOTH density components (P3-6): the x/y size math needs each axis,
+    # and the scalar 'dpi' grades from the WORST axis (a 300x72 file is a
+    # 72-ppi print problem, not a 300-ppi one)
     return {"kind": "raster", "px": im.size, "mode": im.mode,
-            "dpi": (round(dpi[0]) if dpi else None)}
+            "dpi": (round(min(dpi[0], dpi[1])) if dpi else None),
+            "dpi_xy": ((round(dpi[0]), round(dpi[1])) if dpi else None)}
 
 
 # ---------- checks ----------
 def _bare_trim_scale(label, sc):
     """(is_bare_trim, matched_scale) for a size_match label. Bare-trim labels
-    ('full trim' / 'half trim', possibly '(rotated)') mean the file is exactly
-    finished size - i.e. it contains NO bleed unless the boxes prove otherwise."""
+    ('full trim' / 'half trim' / 'quarter trim' ..., possibly '(rotated)') mean
+    the file is exactly finished size - i.e. it contains NO bleed unless the
+    boxes prove otherwise. Scaled labels carry the scale word expected_sizes
+    derived from settings.scale."""
     base = (label or "").split(" (")[0]
-    if base == "full trim":
-        return True, 1.0
-    if base == "half trim":
-        return True, sc
-    return False, (sc if base.startswith("half") else 1.0)
+    scaled = (sc not in (None, 1)) and base.startswith(scale_word(sc) + " ")
+    return base.endswith("trim"), (sc if scaled else 1.0)
 
 
 def check_size(info, spec, p):
     expected, b, sc = expected_sizes(spec, p)
     if info["kind"] == "pdf":
         tw, th = (info["trim_in"] or info["media_in"])
-        m = size_match(tw, th, expected)
+        m = size_match(tw, th, expected, sc)
         info["size_match_label"] = m  # threaded to check_marks via run_checks
         size_txt = f'{tw:.2f}" x {th:.2f}" ({"trim" if info["trim_in"] else "media (no TrimBox)"})'
         # every page must match an expected size, not just page 1
         bad_pages = []
         for ps in info.get("page_sizes", [])[1:]:
             pw2, ph2 = (ps["trim_in"] or ps["media_in"])
-            if not size_match(pw2, ph2, expected):
+            if not size_match(pw2, ph2, expected, sc):
                 bad_pages.append(f'page {ps["page"]} is {pw2:.2f}" x {ph2:.2f}"')
         if bad_pages:
             return "FAIL", (f'{size_txt}{" matches " + m if m else ""}, but ' + "; ".join(bad_pages) +
@@ -476,9 +497,17 @@ def check_size(info, spec, p):
     else:
         px, py = info["px"]
         if info["dpi"]:
-            w_in, h_in = px / info["dpi"], py / info["dpi"]
-            m = size_match(w_in, h_in, expected)
+            # per-axis size math (P3-6): a file tagged e.g. 100x96 dpi is a
+            # different physical size on each axis - the old single-density
+            # division reported the wrong height
+            dx, dy = info.get("dpi_xy") or (info["dpi"], info["dpi"])
+            w_in, h_in = px / dx, py / dy
+            m = size_match(w_in, h_in, expected, sc)
             info["size_match_label"] = m
+            if abs(dx - dy) > 0.01 * max(dx, dy):
+                return "WARN", (f'{w_in:.2f}" x {h_in:.2f}" but the x/y pixel density differs '
+                                f'({dx} x {dy} dpi, > 1%) - the artwork may be stretched or '
+                                f'mis-tagged; re-export with uniform resolution')
             if m:
                 bare, mscale = _bare_trim_scale(m, sc)
                 if bare:
@@ -688,21 +717,30 @@ def fix_instructions(results, info, spec, panel):
     def add(check, status, text):
         fixes.append({"check": check, "severity": status, "text": text})
 
+    # the same scale word expected_sizes used for its labels ('half'/'quarter'/
+    # '<sc:g>x'); None when the spec builds at full scale (no scaled candidates)
+    word = scale_word(sc) if sc not in (None, 1) else None
     st, sdetail = results.get("size", ("PASS", ""))
     if st == "FAIL":
         ftw, fth = exp["full trim"]
         fbw, fbh = exp["full + bleed"]
-        hbw, hbh = exp["half + bleed"]
+        scaled_note = ""
+        if word:
+            hbw, hbh = exp[f"{word} + bleed"]
+            scaled_note = f' ({word.capitalize()} scale — {hbw:g}" × {hbh:g}" — is also accepted.)'
         add("size", st,
             f'Resize to the panel. Finished (trim) size is {ftw:g}" × {fth:g}"; add {bleed:g}" bleed on every '
-            f'side and deliver {fbw:g}" × {fbh:g}". (Half scale — {hbw:g}" × {hbh:g}" — is also accepted.)')
+            f'side and deliver {fbw:g}" × {fbh:g}".{scaled_note}')
     elif st == "WARN" and "no bleed detected" in sdetail:
         fbw, fbh = exp["full + bleed"]
-        hbw, hbh = exp["half + bleed"]
+        scaled_note = ""
+        if word:
+            hbw, hbh = exp[f"{word} + bleed"]
+            scaled_note = f' ({word}-scale files: {hbw:g}" × {hbh:g}")'
         add("size", st,
             f'Add {bleed:g}" bleed on every side — the file matches the finished (trim) size but includes '
             f'no bleed, which risks white edges at the cut. Extend the artwork past the trim and deliver '
-            f'{fbw:g}" × {fbh:g}" (half-scale files: {hbw:g}" × {hbh:g}").')
+            f'{fbw:g}" × {fbh:g}"{scaled_note}.')
 
     st, cmsg = results.get("color", ("PASS", ""))
     if st == "FAIL":

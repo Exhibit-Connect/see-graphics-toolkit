@@ -271,3 +271,12 @@ def test_real_chrome_renders_a_pdf_pypdf_can_open(monkeypatch, tmp_path):
     assert render.html_to_pdf(str(html), str(out)) is True
     from pypdf import PdfReader
     assert len(PdfReader(str(out)).pages) == 1
+
+
+def test_svg_px_size_reads_the_root_tag_only():
+    # P3-6: a root width="100%" plus a numeric width on an INNER element used
+    # to size the canvas from the inner element; the root viewBox must win.
+    svg = ('<svg width="100%" height="100%" viewBox="0 0 1290 555" '
+           'xmlns="http://www.w3.org/2000/svg">'
+           '<rect width="400" height="300" fill="#fff"/></svg>')
+    assert render.svg_px_size_from_text(svg) == (1290, 555)

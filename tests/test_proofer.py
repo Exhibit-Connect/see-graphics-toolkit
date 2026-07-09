@@ -495,3 +495,77 @@ def test_marked_preview_uses_only_this_runs_gs_output(tmp_path, monkeypatch):
     # the unique temp file is removed by the finally block
     leftovers = [p for p in os.listdir(tmp_path) if p.startswith("_proof_mark_")]
     assert leftovers == []
+
+
+# ---------- P3-6: scale word, per-candidate tolerance, per-axis dpi ----------
+def test_scale_word_derivation():
+    assert proofer.scale_word(0.5) == "half"
+    assert proofer.scale_word(0.25) == "quarter"
+    assert proofer.scale_word(0.75) == "0.75x"
+
+
+def test_expected_sizes_use_the_actual_scale_word():
+    spec = {"settings": {"bleed_per_side_in": 1.0, "scale": 0.25}}
+    exp, b, sc = proofer.expected_sizes(spec, {"w": 100, "h": 200})
+    assert exp["quarter trim"] == (25.0, 50.0)
+    assert exp["quarter + bleed"] == (25.5, 50.5)
+    assert "half trim" not in exp                     # no longer mislabeled
+
+
+def test_expected_sizes_skip_scaled_candidates_at_full_scale():
+    spec = {"settings": {"bleed_per_side_in": 1.0, "scale": 1}}
+    exp, _, _ = proofer.expected_sizes(spec, {"w": 100, "h": 200})
+    assert set(exp) == {"full trim", "full + bleed"}
+    spec_none = {"settings": {"bleed_per_side_in": 1.0, "scale": None}}
+    exp2, _, _ = proofer.expected_sizes(spec_none, {"w": 100, "h": 200})
+    assert set(exp2) == {"full trim", "full + bleed"}
+
+
+def test_size_match_per_candidate_tolerance():
+    spec = {"settings": {"bleed_per_side_in": 1.0, "scale": 0.5}}
+    exp, _, sc = proofer.expected_sizes(spec, {"w": 100, "h": 200})
+    # 0.05" error on a half-scale candidate = 0.1" at print size -> rejected
+    assert proofer.size_match(50.05, 100, exp, sc) is None
+    # the same absolute error on a full-scale candidate stays within TOL
+    assert proofer.size_match(100.05, 200, exp, sc) == "full trim"
+    # a truly half-scale file still matches (error under TOL*sc)
+    assert proofer.size_match(50.03, 100.0, exp, sc) == "half trim"
+    # legacy call without sc keeps the old flat tolerance
+    assert proofer.size_match(50.05, 100, exp) == "half trim"
+
+
+def test_fix_instructions_scale_word_follows_the_spec():
+    panel = {"name": "A", "w": 100, "h": 200}
+    res = {"size": ("FAIL", "no match")}
+    q = proofer.fix_instructions(res, {"kind": "pdf"},
+                                 {"settings": {"bleed_per_side_in": 1.0, "scale": 0.25}}, panel)
+    assert "Quarter scale" in q[0]["text"] and '25.5" × 50.5"' in q[0]["text"]
+    full = proofer.fix_instructions(res, {"kind": "pdf"},
+                                    {"settings": {"bleed_per_side_in": 1.0, "scale": 1}}, panel)
+    assert "also accepted" not in full[0]["text"]     # no scaled candidates to offer
+    warn = proofer.fix_instructions({"size": ("WARN", "no bleed detected")}, {"kind": "pdf"},
+                                    {"settings": {"bleed_per_side_in": 1.0, "scale": 0.25}}, panel)
+    assert "quarter-scale files" in warn[0]["text"]
+
+
+def test_analyze_raster_keeps_both_dpi_axes_and_grades_the_worst(tmp_path):
+    from PIL import Image
+    p = tmp_path / "art.png"
+    Image.new("RGB", (300, 300), "white").save(p, dpi=(300, 72))
+    info = proofer.analyze_raster(str(p))
+    assert info["dpi_xy"] == (300, 72)
+    assert info["dpi"] == 72                          # worst axis, not x-axis-only
+
+
+def test_check_size_per_axis_math_and_stretch_warn():
+    spec = {"settings": {"bleed_per_side_in": 1.0, "scale": 0.5}}
+    panel = {"name": "A", "w": 100, "h": 200}
+    # 51" x 101" (= half + bleed) at a uniform 100 dpi: PASS
+    ok = {"kind": "raster", "px": (5100, 10100), "dpi": 100, "dpi_xy": (100, 100)}
+    assert proofer.check_size(ok, spec, panel)[0] == "PASS"
+    # same pixels tagged 100 x 96 dpi: x/y density differs > 1% -> WARN, sizes per axis
+    bad = {"kind": "raster", "px": (5100, 10100), "dpi": 96, "dpi_xy": (100, 96)}
+    st, msg = proofer.check_size(bad, spec, panel)
+    assert st == "WARN"
+    assert "stretched" in msg and "100 x 96 dpi" in msg
+    assert "105.21" in msg                             # 10100/96 — the per-axis height

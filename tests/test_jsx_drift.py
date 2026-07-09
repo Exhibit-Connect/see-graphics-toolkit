@@ -65,3 +65,14 @@ def test_jsx_assigns_a_cmyk_guide_color_to_all_six_key_roles():
     # and each role's color is actually USED to draw (not just defined)
     for role in ("C_BLEED", "C_TRIM", "C_SAFE", "C_KEEP", "C_LIVE", "C_DOOR"):
         assert src.count(role) > 1, f"{role} defined but never used"
+
+
+def test_jsx_bleed_is_process_cyan_and_safe_area_is_dashed():
+    """P3-6 key consistency: the previews draw bleed #00AEEF (process cyan) and
+    a DASHED magenta safe line; the production .jsx must draw the same —
+    C_BLEED cmyk(100,0,0,0) and a dashed safe-area stroke."""
+    src = _jsx()
+    m = re.search(r"var C_BLEED\s*=\s*cmyk\(([^)]*)\)", src)
+    assert [float(x) for x in m.group(1).split(",")] == [100, 0, 0, 0]
+    safe_call = re.search(r"strokeRect\(lSafe,[^;]*\);", src).group(0)
+    assert re.search(r",\s*true\s*\)\s*;$", safe_call), "safe-area stroke is not dashed"

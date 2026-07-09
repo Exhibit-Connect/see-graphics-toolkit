@@ -243,3 +243,26 @@ def test_chrome_absent_fallback_still_exit_0(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["client_templates.py", sp])
     ct.main()                                            # no SystemExit
     assert "PDF step skipped (Chrome not installed)" in capsys.readouterr().out
+
+
+# ---------- P3-6: exact scale percentage + seam-notice wording ----------
+def test_scale_pct_exact_percentage():
+    # 0.75 scale prints at 133.33%, not a rounded '@133%' a vendor would take literally
+    assert ct.scale_pct(0.75) == "built at ¾ scale (print @133.33%)"
+    assert ct.scale_pct(0.5) == "built at ½ scale (print @200%)"   # integral stays whole
+    assert ct.scale_pct(0.4) == "built at 0.4× scale (print @250%)"
+
+
+def test_seam_notice_formats_dims_and_names_the_caption_row():
+    spec = {"settings": SETTINGS, "panels": [{"name": "Seamed", "w": 603.0, "h": 48.0}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 1, 1, oversized=True)
+    assert '(603" × 48")' in html                 # :g — no trailing '.0'
+    assert "File size WITH bleed" in html         # names the exact caption row
+    assert "shown at right" in html
+
+
+def test_seam_notice_omits_parenthetical_when_dims_missing():
+    spec = {"settings": SETTINGS, "panels": [{"name": "S"}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 1, 1, oversized=True)
+    assert "too large for one template." in html  # no '(None" × None")'
+    assert "None" not in html

@@ -21,6 +21,7 @@ Free / zero-install: pure-Python HTML/SVG, PDF via headless Chrome.
 import json, sys, os, re, html
 import branding
 import render
+import spec_validate
 import preview_templates as pt
 
 MAX_BUILD_IN = 226.0  # Illustrator's ~227" artboard limit, measured at build scale
@@ -35,21 +36,25 @@ def re_safe(s):
 
 
 # ---------- pure helpers ----------
+def is_oversized(panel, settings):
+    """True when THIS panel is too big for a single Illustrator artboard at
+    build scale (mirrors the .jsx MAX_AB_PT check). Identity-safe: callers
+    classify each panel OBJECT with this predicate - the old name-keyed set
+    misclassified panels with duplicate names as tile/seam. Pure."""
+    bleed = settings.get("bleed_per_side_in", 1.0)
+    scale = settings.get("scale", 0.5)
+    bw = (panel.get("w", 0) + 2 * bleed) * scale
+    bh = (panel.get("h", 0) + 2 * bleed) * scale
+    return bw > MAX_BUILD_IN or bh > MAX_BUILD_IN
+
+
 def oversized_panels(spec):
     """Panels too big for a single Illustrator artboard at build scale — the
     .jsx skips these to tile/seam separately, and so do we (the page shows a
     notice instead of an artboard). Returns the list of oversized panel dicts.
-    Pure (mirrors the .jsx MAX_AB_PT check)."""
+    Pure (implemented via the per-panel is_oversized predicate)."""
     st = spec.get("settings", {})
-    bleed = st.get("bleed_per_side_in", 1.0)
-    scale = st.get("scale", 0.5)
-    out = []
-    for p in spec.get("panels", []):
-        bw = (p.get("w", 0) + 2 * bleed) * scale
-        bh = (p.get("h", 0) + 2 * bleed) * scale
-        if bw > MAX_BUILD_IN or bh > MAX_BUILD_IN:
-            out.append(p)
-    return out
+    return [p for p in spec.get("panels", []) if is_oversized(p, st)]
 
 
 def is_continuous(panel):
@@ -69,11 +74,16 @@ def fit_px(panel, settings, max_w=860, max_h=470):
 
 
 def scale_pct(scale):
-    """SEE build scale as a percent phrase, e.g. 0.5 -> 'built at ½ scale (print @200%)'."""
+    """SEE build scale as a percent phrase, e.g. 0.5 -> 'built at ½ scale (print @200%)'.
+    The print percentage is EXACT: integral scales print a whole number, others
+    two decimals (0.75 -> @133.33%, never a rounded-off @133% a vendor would
+    treat as literal)."""
     if not scale or scale == 1:
         return "full scale"
     frac = {0.5: "½", 0.25: "¼", 0.75: "¾"}.get(scale, f"{scale:g}×")
-    return f"built at {frac} scale (print @{round(100/scale)}%)"
+    pct = 100 / scale
+    pct_txt = f"{pct:g}" if float(pct).is_integer() else f"{pct:.2f}"
+    return f"built at {frac} scale (print @{pct_txt}%)"
 
 
 def caption_rows(panel, settings):
@@ -126,15 +136,21 @@ def _howto():
 
 def panel_page_html(panel, spec, page, pages, oversized=False):
     st = spec.get("settings", {})
-    door = spec.get("door_standard", {})
+    # No door_standard in the spec -> the .jsx's built-in door (pt.DOOR_DEFAULT),
+    # so this client template draws the same door the production template draws.
+    door = spec.get("door_standard") or pt.DOOR_DEFAULT
     name = panel.get("name", "?")
     cap = "".join(f'<tr><td class="cl">{html.escape(l)}</td><td class="cv">{html.escape(str(v))}</td></tr>'
                   for l, v in caption_rows(panel, st))
     continuous = is_continuous(panel)
     if oversized and not continuous:
-        art = (f'<div class="oversize">&#9888; This piece is too large for one template '
-               f'({panel.get("w")}" × {panel.get("h")}"). It is printed in sections and seamed together — '
-               f'our team will handle the tiling. Build to the finished size + bleed listed, full resolution.</div>')
+        w, h = panel.get("w"), panel.get("h")
+        dims = (f' ({w:g}" × {h:g}")'
+                if isinstance(w, (int, float)) and isinstance(h, (int, float)) else "")
+        art = (f'<div class="oversize">&#9888; This piece is too large for one template{dims}. '
+               f'It is printed in sections and seamed together — '
+               f'our team will handle the tiling. Build to the &ldquo;File size WITH bleed&rdquo; '
+               f'shown at right, full resolution.</div>')
     else:
         px = fit_px(panel, st)
         bleed = st.get("bleed_per_side_in", 1.0)
@@ -170,7 +186,8 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
     </section>"""
 
 
-def _cover_page(spec, panels, over_names, pages):
+def _cover_page(spec, panels, pages):
+    st = spec.get("settings", {})
     j = spec.get("job", {}) or {}
     fields = [("Client", j.get("client")), ("Show", j.get("show")), ("Booth", j.get("booth_size")),
               ("Job #", j.get("job_number") or j.get("estimate")), ("Version", j.get("version")),
@@ -185,12 +202,12 @@ def _cover_page(spec, panels, over_names, pages):
         # wall printed in one continuous run is marked — not only the artboard-oversized one.
         if is_continuous(p):
             tag = ' <span class="ov">one piece</span>'
-        elif p.get("name") in over_names:
+        elif is_oversized(p, st):
             tag = ' <span class="ov">tile/seam</span>'
         else:
             tag = ""
         lis += (f'<tr><td>{i}</td><td><b>{html.escape(str(p.get("name", "?")))}</b>{tag}</td>'
-                f'<td>{html.escape(size)}</td><td>{html.escape(p.get("finish") or "—")}</td></tr>')
+                f'<td>{html.escape(size)}</td><td>{html.escape(str(p.get("finish") or "—"))}</td></tr>')
     return f"""<section class="page">
       {branding.header_html("Client Design Templates")}
       <h1>{html.escape(j.get('name', '') or j.get('client', '') or 'Booth')}</h1>
@@ -250,19 +267,19 @@ FOOT = '</body></html>'
 
 def build_templates_html(spec):
     """The whole client-template document: a cover + one page per panel."""
+    st = spec.get("settings", {})
     panels = spec.get("panels", [])
-    over = {p.get("name") for p in oversized_panels(spec)}
     pages = len(panels) + 1
-    parts = [HEAD, _cover_page(spec, panels, over, pages)]
+    parts = [HEAD, _cover_page(spec, panels, pages)]
     for i, p in enumerate(panels):
-        parts.append(panel_page_html(p, spec, i + 2, pages, oversized=(p.get("name") in over)))
+        parts.append(panel_page_html(p, spec, i + 2, pages, oversized=is_oversized(p, st)))
     parts.append(FOOT)
     return "".join(parts)
 
 
 def single_panel_doc(spec, panel):
-    over = {p.get("name") for p in oversized_panels(spec)}
-    return HEAD + panel_page_html(panel, spec, 1, 1, oversized=(panel.get("name") in over)) + FOOT
+    st = spec.get("settings", {})
+    return HEAD + panel_page_html(panel, spec, 1, 1, oversized=is_oversized(panel, st)) + FOOT
 
 
 def main():
@@ -270,7 +287,12 @@ def main():
     per_panel = "--per-panel" in args
     files = [a for a in args if not a.startswith("--")]
     spec_path = files[0] if files else find_default_spec()
-    spec = json.load(open(spec_path))
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
+    try:
+        spec_validate.validate_or_raise(spec)   # before ANY output is written
+    except spec_validate.SpecError as e:
+        spec_validate.report_and_exit(e)
     spec["__source"] = os.path.basename(spec_path)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
     panels = spec.get("panels", [])
@@ -278,7 +300,9 @@ def main():
 
     hp = os.path.abspath(f"{base}_Client_Templates.html")
     pp = os.path.abspath(f"{base}_Client_Templates.pdf")
-    open(hp, "w").write(build_templates_html(spec))
+    doc = build_templates_html(spec)   # build BEFORE opening: no truncated file on error
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(doc)   # flushed/closed before Chrome reads it via file://
     msg = f"panels: {len(panels)}"
     if over:
         seam = [str(p.get("name")) for p in over if not is_continuous(p)]
@@ -289,25 +313,47 @@ def main():
             msg += f"  ·  oversized (one piece, doors marked): {', '.join(cont)}"
     print(msg)
     print("HTML:", hp)
+    # Chrome-missing (legitimate open-the-HTML fallback, exit 0) and
+    # Chrome-present-but-render-FAILED (exit 1) are different outcomes -
+    # 'PDF step skipped' used to cover both, and main always exited 0.
+    chrome_present = render.chrome_available()
+    exit_code = 0
     if render.html_to_pdf(hp, pp):
         print("PDF :", pp, f"({os.path.getsize(pp)} bytes)")
+    elif not chrome_present:
+        print("PDF step skipped (Chrome not installed) — open the HTML and Print -> Save as PDF.")
     else:
-        print("PDF step skipped — open the HTML and Print -> Save as PDF.")
+        print(f"PDF render FAILED for {pp} — open the HTML and Print -> Save as PDF.")
+        exit_code = 1
 
     if per_panel:
-        made = 0
-        for p in panels:
+        made, failed, used = 0, [], set()
+        for i, p in enumerate(panels, 1):
             stem = f"{base}_{re_safe(p.get('name', 'panel'))}_template"
+            if stem in used:
+                # 'Wall-1' and 'Wall 1' share a sanitized stem - the later PDF
+                # silently overwrote the earlier one; disambiguate by index
+                stem = f"{base}_{re_safe(p.get('name', 'panel'))}_{i}_template"
+            used.add(stem)
             ph = os.path.abspath(stem + ".html")
             pdf = os.path.abspath(stem + ".pdf")
-            open(ph, "w").write(single_panel_doc(spec, p))
+            open(ph, "w", encoding="utf-8").write(single_panel_doc(spec, p))
             if render.html_to_pdf(ph, pdf):
                 made += 1
-            try:
-                os.remove(ph)
-            except OSError:
-                pass
+                try:
+                    os.remove(ph)
+                except OSError:
+                    pass
+            else:
+                # keep the HTML so the panel can still be printed manually
+                failed.append(str(p.get("name", "panel")))
         print(f"per-panel PDFs: {made} of {len(panels)}")
+        if failed:
+            print(f"per-panel FAILED (HTML kept for manual print): {', '.join(failed)}")
+            if chrome_present:
+                exit_code = 1
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

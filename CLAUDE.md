@@ -19,7 +19,7 @@ can never disagree. Define the booth once → everything downstream stays consis
 | `client_templates.py` | **Client-ready design templates** (PDF) from the booth file — one page per panel with bleed/trim/safe/keep-clear/live/door guides + exact sizes **plus the ½-scale build size** (SEE builds at ½ scale, prints @200%), openable without Illustrator so clients design on the real layout. A panel can carry multiple **`door_marks`** (openings marked along one long graphic). Oversized pieces show a tile/seam notice **unless flagged `"oversize_mode": "continuous"`** (printed in one piece by the vendor) — those render as one continuous template with the doors marked. `--per-panel` also emits one PDF each. | `python3 tools/client_templates.py [booth.json] [--per-panel]` |
 | `generate_spec_packet.py` | Client submission spec packet (PDF) from the booth file — a **fully branded 16″×9″ slide deck** mirroring SEE's official 2025 client presentation: cover (client + show + booth, on SEE's signature geometric background), Who We Are, project info, an **overall 3D booth rendering** on its own page (`rendering_3d` field), one or more **labeled graphic-placement pages** (`rendering` field — accepts a single image or a **list**, so a booth with several placement drawings gets one page each, e.g. the deck's per-wall-group "Graphic Details" views), a **Graphics-to-Submit** table (per-panel size / material / finishing-type / qty / sided / visible area) that **paginates across as many 16×9 slides as the panel count needs** so no panel is ever clipped, a **native Artwork Guidelines** page (build rules + accepted-format icons, laid out at 16×9 — not a pasted image), and a Thank You close. The official image pages (Who We Are / Thank You) embed from the local-only `assets/brand/` folder and drop out cleanly on a public checkout; cover/info/graphics/guidelines always render. Stamps an **UNVERIFIED-DIMENSIONS** banner on any unconfirmed panel. | `python3 tools/generate_spec_packet.py [booth.json]` |
 | `proofer.py` | Checks returned client artwork vs the booth file: size, color (flags RGB), resolution, fonts, printer marks, spelling. Adds a plain-English **"what to change" fix list** + a marked-up preview, but **never alters the client's file**. | `python3 tools/proofer.py artwork.pdf [--panel NAME]` |
-| `make_proof.py` | The client proof: a single item, or a **whole-job document** (cover/summary + one page per graphic). Structured spec block, status legend, disclaimer banner, the fix list, 3-way sign-off, prepped/QC footer; dated, **locked** sign-off + a log. Refuses to approve a FAIL, a placeholder/blank, or an **unverified** panel. | item: `make_proof.py art.pdf [...] [--approve "Name"]` · job: `make_proof.py a1 a2 …` |
+| `make_proof.py` | The client proof: a single item, or a **whole-job document** (cover/summary + one page per graphic). Structured spec block, status legend, disclaimer banner, the fix list, 3-way sign-off, prepped/QC footer; dated sign-off **stamped on the proof and logged**. Refuses to approve a FAIL, an unverified size, a placeholder/blank approver, an **unverified** panel, an approval that can't be logged, or a NEEDS-REVIEW result without an explicit `--ack-review "reason"` (the reason is recorded on the proof and in the log). | item: `make_proof.py art.pdf [...] [--approve "Name" [--ack-review "reason"]]` · job: `make_proof.py a1 a2 …` |
 | `dashboard.py` | **Job status dashboard** (HTML, `--pdf` for PDF): every active job + its stage (intake / awaiting confirm / in proof / approved), due date + countdown, and risk flags (unverified panels, failed checks, approaching deadline). Built from the booth files + `proof_log.xlsx`; degrades gracefully without them. | `python3 tools/dashboard.py [--jobs-dir DIR] [--pdf]` |
 | `branding.py` | Shared SEE branding: official logo (high-res, from the vector brand source), official brand red **#E31D3D**, Helvetica Neue font stack, contact header, and the official Artwork-Guidelines page helper — so every generated document (spec sheet, check report, proof, dashboard, client templates) matches. | (imported by the others) |
 | `render.py` | Shared HTML→PDF helper (poll-then-terminate headless Chrome) used by every PDF-producing tool. | (imported by the others) |
@@ -65,13 +65,38 @@ preview rasterizes via that same Chrome helper (`render.svg_to_png`, sized to th
 wide booths aren't cropped; falls back to **qlmanage** only if Chrome is absent); **Ghostscript** rasterizes PDFs for OCR. **Mac-centric.** The `.jsx`
 runs only inside Illustrator (a `CMYKColor is not defined` error anywhere else is expected).
 
+## Manual Illustrator smoke checklist (.jsx changes)
+No automated Illustrator run exists — after ANY change to `tools/SEE_Wall_Template_Generator.jsx`
+(and before shipping it), run this 5-step check on macOS in Adobe Illustrator:
+1. **Happy path:** File ▸ Scripts ▸ Other Script… → the generator, pick
+   `examples/1_booth_spec_example.json`. The run finishes with the "Done." alert and the artboard
+   count equals every non-oversized panel, counting double-sided panels twice (Side A + Side B);
+   any skipped items are listed with their reason (tile/seam vs. continuous vs. layout error).
+2. **door_marks:** on a panel carrying `door_marks` (add a demo panel to a copy of the example if
+   none has them), each opening shows a dashed red rect at full trim height with its label, plus
+   handle/lock holes when the entry sets `side`.
+3. **Side B mirroring:** on a `"sided": "double"` panel with a door and zones, Side B shows the
+   door on the MIRRORED hand (left↔right) and each zone at the mirrored x (`w - x - zw`).
+   Keep-clear zones appear on BOTH sides (default: over-marking beats art over hardware).
+4. **Corrupt spec aborts:** pick a deliberately corrupted JSON (e.g. truncate a copy) → the script
+   alerts the parse error and creates NO document. The built-in example builds ONLY on explicit
+   Cancel.
+5. **Key + settings:** guide colors match the key (cyan bleed / black trim / magenta safe /
+   orange keep-clear / green live / red door) and the final alert's scale + bleed match the spec.
+
+Note (follow-up): interior zones currently mirror onto Side B unconditionally; a per-zone `sides`
+field ("A"/"B"/"both") would let a zone opt out of one side if production ever needs that.
+
 ## Tests + definition of done
-Run `pip install -r requirements-dev.txt && pytest` (104 tests; covers the pure helpers in `intake.py` /
-`proofer.py` / `make_proof.py` / `branding.py` / `dashboard.py` / `client_templates.py` / `render.py` /
-`generate_spec_packet.py`).
+Run `pip install -r requirements-dev.txt && pytest` (420+ tests; covers `intake.py` (parsing + the
+seeding cascade) / `proofer.py` (incl. the PDF-analysis fixture matrix) / `make_proof.py` (incl. the
+approval gate and proof-log round-trip) / `branding.py` / `dashboard.py` / `client_templates.py` /
+`preview_templates.py` / `render.py` / `generate_spec_packet.py` / `spec_validate.py` / `ai_client.py`
+(network faked) / the `.jsx` drift guards + golden snapshots of the client-facing output). The default
+tier needs no system binaries; tests marked `external` use Chrome/gs/tesseract when present.
 **Extend the suite whenever you add or change logic** in a tool. A behavior
-change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the two overview
-PDFs in `docs/`) are updated to match.
+change isn't "done" until the tests pass *and* the living docs (`docs/Instructions.md` + the
+`docs/Workflow_Map` diagram) are updated to match.
 
 ## Critical rules
 - **Never commit secrets or large binaries.** `.openrouter_key`, `*.zip`, and the tools' runtime outputs are

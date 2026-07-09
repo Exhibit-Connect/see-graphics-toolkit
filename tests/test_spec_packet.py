@@ -162,6 +162,164 @@ def test_small_job_stays_single_graphics_slide():
     assert "Graphics to Submit (cont.)" not in html
 
 
+# ---- P0-13: pagination must not silently clip zone-heavy panel rows ----
+
+def test_row_est_px_counts_visible_and_material_lines():
+    base = gsp.row_est_px("", False)
+    assert gsp.row_est_px("", False, vis_lines=4) == 18 + 4 * 19    # zones + door dominate
+    assert gsp.row_est_px("", False, vis_lines=4) > base
+    assert gsp.row_est_px("", False, mat_lines=2) == 18 + 2 * 19    # interior_finish line
+
+
+def test_planned_pages_stay_under_derated_cap():
+    # the confirmed bug shape: 12 panels x 3 zones + interior finish estimated
+    # 488px but rendered ~884px on a 696px body -> ~3 rows clipped
+    costs = [gsp.row_est_px("", False, vis_lines=3, mat_lines=2)] * 12
+    pages = gsp.plan_graphics_pages(costs, banner_est=120)
+    assert len(pages) > 1                                           # actually paginated now
+    for pg in pages:
+        assert pg["used"] <= gsp.GFX_CAP_PX * 0.9                   # every page under the derated cap
+    assert [i for pg in pages for i in pg["rows"]] == list(range(12))
+
+
+def test_first_row_overflowing_banner_page_starts_page_two():
+    # a big banner nearly fills page 1: the first row must not be forced onto it
+    pages = gsp.plan_graphics_pages([200], banner_est=500)
+    assert pages[0]["banner"] is True and pages[0]["rows"] == []
+    assert pages[1]["rows"] == [0]
+
+
+def test_excluded_list_respects_the_cap():
+    # exclusions must not overflow a nearly-full last page — they get their own page
+    pages = gsp.plan_graphics_pages([500], excl_est=200)
+    assert pages[-1]["excl"] is True and pages[-1]["rows"] == []
+    assert sum(1 for pg in pages if pg["excl"]) == 1
+
+
+def test_zone_heavy_booth_keeps_every_panel_exactly_once():
+    many = dict(BASE)
+    many["panels"] = [{"name": f"ZP{i:02d}", "w": 100, "h": 50, "finish": "fabric",
+                       "interior_finish": "white PVC", "sided": "single",
+                       "zones": [{"x": 0, "y": 0, "w": 10, "h": 10, "kind": "live"},
+                                 {"x": 0, "y": 20, "w": 10, "h": 10, "kind": "keepclear", "label": "shelf"},
+                                 {"x": 0, "y": 40, "w": 10, "h": 10, "kind": "keepclear", "label": "tv"}]}
+                      for i in range(12)]
+    html = gsp.build_html(many)
+    for i in range(12):
+        assert html.count(f"ZP{i:02d}") == 1                        # each panel once — never clipped/duplicated
+    assert html.count('class="slide slide-doc"') >= 2               # split across slides
+
+
+# ---- P0-12: settings wired into the deck; live draft flag; scaled bleed text ----
+
+def test_how_to_build_slide_present_with_settings():
+    html = gsp.build_html(dict(BASE))
+    assert "How to Build" in html
+    assert 'class="slide slide-doc slide-howto"' in html
+    assert '<ul class="specs">' in html
+    assert "Printer marks" in html                      # a specs bullet actually rendered
+
+
+def test_non_default_color_mode_reaches_the_packet():
+    spec = dict(BASE, settings={"scale": 0.5, "bleed_per_side_in": 1.0, "color_mode": "RGB-backlit"})
+    assert "RGB-backlit" in gsp.build_html(spec)
+
+
+def test_non_default_fonts_setting_reaches_the_packet():
+    spec = dict(BASE, settings={"scale": 0.5, "bleed_per_side_in": 1.0, "fonts": "embed all fonts"})
+    assert "embed all fonts" in gsp.build_html(spec)
+
+
+def test_half_scale_bleed_wording_gives_scaled_per_side():
+    html = gsp.build_html(dict(BASE))                   # scale 0.5, bleed 1.0
+    assert "0.5″ per side" in html                      # the ½-scale instruction
+    # the old wording told everyone to add the FULL-scale bleed with no caveat
+    assert "2″ bleed</b> to the overall width" not in html
+    assert "add 1″ on each side" not in html
+
+
+def test_full_scale_bleed_wording_stays_unscaled():
+    spec = dict(BASE, settings={"scale": 1, "bleed_per_side_in": 1.0})
+    html = gsp.build_html(spec)
+    assert "1″ bleed</b> per side" in html
+    assert "0.5″ per side" not in html
+
+
+def test_draft_ribbon_on_tbd_finish_only_spec():
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "TBD", "sided": "single"}])
+    html = gsp.build_html(spec)
+    assert "DRAFT — NOT FOR CLIENT" in html             # visible cover ribbon
+    assert "not for client distribution" in html        # disclaimer note
+
+
+def test_no_draft_ribbon_on_clean_spec():
+    assert "DRAFT — NOT FOR CLIENT" not in gsp.build_html(dict(BASE))
+
+
+def test_final_flag_suppresses_ribbon_in_html():
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "TBD", "sided": "single"}])
+    assert "DRAFT — NOT FOR CLIENT" not in gsp.build_html(spec, final=True)
+
+
+def test_draft_reasons_lists_all_three():
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "TBD", "needs_confirm": True}],
+                pending_inputs=["confirm door"])
+    rs = gsp.draft_reasons(spec)
+    assert any("TBD" in r for r in rs)
+    assert any("pending" in r for r in rs)
+    assert any("unverified" in r for r in rs)
+    assert gsp.draft_reasons(dict(BASE)) == []
+
+
+def _write_spec(tmp_path, spec, name="booth_spec_test.json"):
+    import json
+    p = tmp_path / name
+    p.write_text(json.dumps(spec))
+    return p
+
+
+def test_main_suffixes_draft_output_for_tbd_spec(tmp_path, monkeypatch, capsys):
+    import sys
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "TBD", "sided": "single"}])
+    p = _write_spec(tmp_path, spec)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gsp.render, "html_to_pdf", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "argv", ["generate_spec_packet.py", str(p)])
+    gsp.main()
+    out = capsys.readouterr().out
+    assert (tmp_path / "test_Spec_Packet_DRAFT.html").exists()   # filename says DRAFT
+    assert not (tmp_path / "test_Spec_Packet.html").exists()
+    assert "DRAFT packet" in out and "TBD finishes" in out       # warning lists why
+
+
+def test_main_final_refuses_while_unverified(tmp_path, monkeypatch, capsys):
+    import sys
+    import pytest
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "fabric",
+                               "sided": "single", "needs_confirm": True}])
+    p = _write_spec(tmp_path, spec)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gsp.render, "html_to_pdf", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "argv", ["generate_spec_packet.py", str(p), "--final"])
+    with pytest.raises(SystemExit) as e:
+        gsp.main()
+    assert e.value.code == 1                                     # nonzero exit
+    assert "REFUSED" in capsys.readouterr().out
+    assert not list(tmp_path.glob("*_Spec_Packet*.html"))        # nothing was written
+
+
+def test_main_final_overrides_draft_when_verified(tmp_path, monkeypatch, capsys):
+    import sys
+    spec = dict(BASE, panels=[{"name": "A", "w": 10, "h": 20, "finish": "TBD", "sided": "single"}])
+    p = _write_spec(tmp_path, spec)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gsp.render, "html_to_pdf", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "argv", ["generate_spec_packet.py", str(p), "--final"])
+    gsp.main()
+    assert (tmp_path / "test_Spec_Packet.html").exists()         # no _DRAFT suffix
+    assert "DRAFT — NOT FOR CLIENT" not in (tmp_path / "test_Spec_Packet.html").read_text(encoding="utf-8")
+
+
 def test_official_brand_pages_present_or_cleanly_absent():
     import branding
     html = gsp.build_html(dict(BASE))

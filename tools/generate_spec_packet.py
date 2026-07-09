@@ -15,6 +15,7 @@ import json, sys, os, html, base64, math
 import proofer
 import branding
 import render
+import spec_validate
 
 RED = branding.RED
 
@@ -37,28 +38,38 @@ def est_lines(text, chars_per_line):
     return max(1, math.ceil(n / chars_per_line))
 
 
-def row_est_px(note_text, unverified):
-    """Estimated rendered height (px) of one panel row; the Notes cell dominates,
-    and the size cell wraps to a 2nd line when it carries the 'unverified' badge."""
-    lines = max(est_lines(note_text, 82), 2 if unverified else 1)
+def row_est_px(note_text, unverified, vis_lines=1, mat_lines=1):
+    """Estimated rendered height (px) of one panel row — the TALLEST cell wins,
+    not just the Notes cell. Counted columns: Notes (wrapped), the size cell
+    (2 lines when it carries the 'unverified' badge), the Visible-area cell
+    (`vis_lines`: one line per zone + a door line), and Material (`mat_lines`:
+    2 when interior_finish adds its own line). Zone-heavy booths previously
+    under-estimated by ~2x and rows were silently clipped off the slide."""
+    lines = max(est_lines(note_text, 82), 2 if unverified else 1,
+                max(1, vis_lines), max(1, mat_lines))
     return 18 + lines * 19   # cell padding + wrapped lines
 
 
 def plan_graphics_pages(row_costs, banner_est=0, excl_est=0,
-                        cap=GFX_CAP_PX, thead=GFX_THEAD_PX):
+                        cap=GFX_CAP_PX, thead=GFX_THEAD_PX, safety=0.9):
     """Pure planner: pack panel rows onto as many slides as needed.
 
     Returns a list of page dicts: {"banner": bool, "rows": [row_index,...],
-    "excl": bool}. The banner (unverified + draft notes) rides on page 1; the
-    excluded list rides on the last page with rows, or its own page if it won't
-    fit. Every row index appears on exactly one page, order preserved, and no
-    page exceeds `cap` unless a single item is itself larger than `cap` (a lone
-    oversized row still gets its own page so nothing is ever dropped)."""
+    "excl": bool}. The banner (unverified + draft notes) rides on page 1 (but a
+    first row that won't fit under it starts page 2 instead of overflowing); the
+    excluded list rides on the last page IF it fits under the cap, else its own
+    page. Every row index appears on exactly one page, order preserved, and no
+    page exceeds the derated cap unless a single item is itself larger than it
+    (a lone oversized row still gets its own page so nothing is ever dropped).
+    `safety` derates the cap (default 0.9) because these estimates duplicate the
+    deck's CSS metrics rather than measuring the render — better a slightly
+    emptier slide than a clipped panel row."""
+    cap = cap * safety
     pages = []
     cur = {"banner": banner_est > 0, "rows": [], "used": banner_est if banner_est > 0 else 0}
     for idx, cost in enumerate(row_costs):
         add = cost + (thead if not cur["rows"] else 0)
-        if cur["rows"] and cur["used"] + add > cap:
+        if cur["used"] + add > cap and (cur["rows"] or cur["banner"]):
             pages.append(cur)
             cur = {"banner": False, "rows": [], "used": 0}
             add = cost + thead
@@ -68,7 +79,7 @@ def plan_graphics_pages(row_costs, banner_est=0, excl_est=0,
 
     if excl_est > 0:
         last = pages[-1]
-        if last["rows"] and last["used"] + excl_est > cap:
+        if last["used"] + excl_est > cap and (last["rows"] or last["banner"]):
             pages.append({"banner": False, "rows": [], "used": excl_est, "excl": True})
         else:
             last["used"] += excl_est
@@ -103,14 +114,10 @@ def cover_bg_data_uri():
 
 
 def find_default_spec():
-    import glob
-    here = os.path.dirname(os.path.abspath(__file__))
-    for d in (os.getcwd(), os.path.join(here, "..", "examples"),
-              os.path.join(os.getcwd(), "examples"), here):
-        hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
-        if hits:
-            return hits[0]
-    return "booth_spec.json"
+    """Same demo-friendly discovery as preview_templates: announce the chosen
+    spec, refuse ambiguity, keep (but loudly flag) the examples/ fallback."""
+    import preview_templates
+    return preview_templates.find_default_spec()
 
 
 def esc(v):
@@ -159,19 +166,49 @@ def scale_label(s):
     return f"{s}× scale (output {round(100/s)}%)"
 
 
+def bleed_bullet(bleed, sc):
+    """Client-facing bleed instruction, stated PER BUILD SCALE. The proofer
+    intentionally accepts ½-scale files at (w + 2*bleed) * scale — i.e. the bleed
+    is built at scale too — so the old unscaled 'add {bleed*2}″' wording made a
+    client following it literally at ½ scale deliver 1″ oversize per axis.
+    Pure text fix; the acceptance math is untouched (invariant 5)."""
+    if sc and sc != 1:
+        word = {0.5: "½-scale", 0.25: "¼-scale", 0.75: "¾-scale"}.get(sc, f"{sc:g}×-scale")
+        return (f'Full scale: add <b>{bleed:g}″ bleed</b> per side; '
+                f'{word} files: add <b>{bleed*sc:g}″ per side</b> (bleed is built at scale too)')
+    return f'Add <b>{bleed:g}″ bleed</b> per side ({bleed*2:g}″ total to the overall width &amp; height)'
+
+
+def draft_reasons(spec):
+    """Why this packet is still a DRAFT: TBD finishes, open pending_inputs, or
+    unverified (AI/OCR-sourced) panel dimensions. Empty list = final-ready."""
+    reasons = []
+    if any("TBD" in str(p.get("finish", "")) for p in spec.get("panels", [])):
+        reasons.append("TBD finishes")
+    if spec.get("pending_inputs"):
+        reasons.append("pending inputs still open")
+    unv = proofer.unverified_panels(spec)
+    if unv:
+        reasons.append("unverified panel dimensions: " + ", ".join(unv))
+    return reasons
+
+
 def visible_cell(p):
     parts = []
     if p.get("door"):
         parts.append(f'Door — handle on the {esc(p["door"])}')
     for z in p.get("zones", []):
         if z.get("kind") == "live":
-            parts.append(f'<b>Live art area:</b> {z["w"]}″ × {z["h"]}″')
+            parts.append(f'<b>Live art area:</b> {esc(z["w"])}″ × {esc(z["h"])}″')
         else:
             parts.append(f'<span class="keep">Keep clear:</span> {esc(z.get("label",""))}')
     return "<br>".join(parts) if parts else '<span class="muted">Full panel</span>'
 
 
-def build_html(spec):
+def build_html(spec, final=False):
+    # zone_xy=False: this deck only PRINTS live-area sizes; keep-clear zones may
+    # be label-only (intake drafts seed them that way). Geometry tools are stricter.
+    spec_validate.validate_or_raise(spec, zone_xy=False)
     job = spec.get("job", {})
     st = spec.get("settings", {})
     ppi = st.get("resolution_ppi", {})
@@ -179,7 +216,7 @@ def build_html(spec):
     pending = spec.get("pending_inputs", [])
     excluded = spec.get("excluded", [])
     unverified = proofer.unverified_panels(spec)
-    draft = any("TBD" in str(p.get("finish", "")) for p in panels) or bool(pending) or bool(unverified)
+    draft = bool(draft_reasons(spec)) and not final
     footer_note = ("Sizes marked ⚠ are UNVERIFIED until a person confirms them against the source."
                    if unverified else "For position only; sizes are final unless flagged.")
 
@@ -199,7 +236,7 @@ def build_html(spec):
         note = esc(note_txt) or '<span class="muted">—</span>'
         row_htmls.append(f"""<tr>
           <td class="pname">{esc(p['name'])}</td>
-          <td class="size{' unvsize' if unv else ''}">{p['w']}″ × {p['h']}″{unv_badge}</td>
+          <td class="size{' unvsize' if unv else ''}">{esc(p['w'])}″ × {esc(p['h'])}″{unv_badge}</td>
           <td{fin_cls}>{esc(finish)}{interior}</td>
           <td{ftype_cls}>{esc(ftype)}</td>
           <td class="qty">{esc(qty)}</td>
@@ -207,11 +244,15 @@ def build_html(spec):
           <td class="vis">{visible_cell(p)}</td>
           <td class="note">{note}</td>
         </tr>""")
-        row_costs.append(row_est_px(note_txt, unv))
+        # Height estimate must count the tall cells: the Visible-area cell renders
+        # one line per zone plus a door line, and interior_finish adds a Material line.
+        vis_lines = len(p.get("zones", [])) + (1 if p.get("door") else 0)
+        mat_lines = 2 if p.get("interior_finish") else 1
+        row_costs.append(row_est_px(note_txt, unv, vis_lines, mat_lines))
 
     excl = ""
     if excluded:
-        items = "".join(f"<li><b>{esc(e['name'])}</b> — {esc(e.get('reason',''))}</li>" for e in excluded)
+        items = "".join(f"<li><b>{esc(e.get('name', '?'))}</b> — {esc(e.get('reason',''))}</li>" for e in excluded)
         excl = f'<h2>Not in this packet</h2><ul class="plain">{items}</ul>'
 
     banner = ""
@@ -226,11 +267,12 @@ def build_html(spec):
         banner += f'<div class="draft">DRAFT — items below are still being confirmed; {sizes_claim}:<ul>{pend}</ul></div>'
 
     bleed = st.get("bleed_per_side_in", 1.0)
+    sc = st.get("scale", 0.5)
     specs = f"""
-      <li><b>Scale:</b> {esc(scale_label(st.get('scale', 0.5)))}</li>
-      <li><b>Bleed:</b> add {bleed}″ on each side ({bleed*2}″ total to the overall width and height)</li>
+      <li><b>Scale:</b> {esc(scale_label(sc))}</li>
+      <li><b>Bleed:</b> {bleed_bullet(bleed, sc)}</li>
       <li><b>Color:</b> {esc(st.get('color_mode','CMYK / Pantone'))}</li>
-      <li><b>Resolution:</b> {ppi.get('min',120)}–{ppi.get('max',150)} ppi at scale (no more than {ppi.get('max',150)})</li>
+      <li><b>Resolution:</b> {esc(ppi.get('min',120))}–{esc(ppi.get('max',150))} ppi at scale (no more than {esc(ppi.get('max',150))})</li>
       <li><b>Fonts:</b> {esc(st.get('fonts','convert to outlines'))}</li>
       <li><b>Printer marks:</b> {esc(st.get('printer_marks','disabled'))}</li>
       <li><b>Safe margin:</b> keep logos &amp; text ~{esc(st.get('safe_margin_in',4))}″ in from the edges</li>
@@ -252,6 +294,9 @@ def build_html(spec):
     booth = esc(job.get("booth_size", ""))
 
     cover_sub = " &nbsp;·&nbsp; ".join(x for x in [show, (booth + " booth" if booth else "")] if x)
+    # DRAFT gate: while any detail is unresolved (TBD finishes / pending inputs /
+    # unverified sizes) the deck is visibly stamped so it can't pass as final.
+    ribbon = '<div class="draftrib">DRAFT — NOT FOR CLIENT</div>' if draft else ""
     cover_base = branding.brand_page_data_uri("cover_base")
     if cover_base:
         # 1:1 with SEE's official cover: their exact page (geometric background + the red
@@ -259,6 +304,7 @@ def build_html(spec):
         # client name into place, positioned to match the template.
         cover_slide = f"""
       <section class="slide slide-coverreal" style="background:#ededed url('{cover_base}') center/cover no-repeat;">
+        {ribbon}
         <div class="cov-wordmark">SOUTHEAST EXHIBITS</div>
         <div class="cov-client">{client_only or 'CLIENT NAME'}</div>
       </section>"""
@@ -266,6 +312,7 @@ def build_html(spec):
         # Fallback (no brand assets, e.g. a public checkout): recreated geometric background.
         cover_slide = f"""
       <section class="slide slide-cover" style="background:#ededed url('{cover_bg_data_uri()}') center/cover no-repeat;">
+        {ribbon}
         <div class="cover-block">
           <div class="cover-eyebrow">Graphic Submission Spec Packet</div>
           <div class="cover-co">SOUTHEAST<br>EXHIBITS</div>
@@ -331,9 +378,11 @@ def build_html(spec):
     thead_html = ("<thead><tr><th>Panel</th><th>Finished size (W × H)</th><th>Material</th>"
                   "<th>Finishing type</th><th>Qty</th><th>Sided</th>"
                   "<th>Visible area / keep-clear</th><th>Notes</th></tr></thead>")
+    draft_note = (" DRAFT — details above are still being confirmed; not for client distribution."
+                  if draft else "")
     disclaimer = (f'<div class="disclaimer">Generated from '
                   f'{esc(os.path.basename(spec.get("__source","booth spec")))} · '
-                  f'Southeast Exhibits &amp; Events. {footer_note}</div>')
+                  f'Southeast Exhibits &amp; Events. {footer_note}{draft_note}</div>')
 
     # height estimates for the planner (px @ 96dpi); the banner + draft box ride on
     # slide 1, so their height reduces how many rows fit there.
@@ -365,6 +414,18 @@ def build_html(spec):
       </section>""")
     graphics_slide = "".join(gfx_slides)
 
+    # "How to Build" — the per-booth build settings (scale, bleed, color mode,
+    # resolution band, fonts, printer marks, safe margin, submission channel) as
+    # their own slide, so a non-default setting in the booth JSON reaches the
+    # client instead of being silently ignored. (Extra class `slide-howto` keeps
+    # it distinguishable from the paginated Graphics-to-Submit slides.)
+    howto_slide = f"""
+      <section class="slide slide-doc slide-howto">
+        {logo_tag}
+        <div class="pill-head">How to Build</div>
+        <div class="doc-body"><ul class="specs">{specs}</ul></div>
+      </section>"""
+
     # Artwork Guidelines rebuilt as a NATIVE 16×9 slide (was a pasted image of the
     # official one-pager) — same content/look (red section heads, the accepted-format
     # app chips, the copyright line), laid out cleanly and filled from this booth file.
@@ -373,6 +434,15 @@ def build_html(spec):
     formats = (afmt("Ps", "#001E36", "#31A8FF") + afmt("Ai", "#330000", "#FF9A00")
                + afmt("Id", "#49021F", "#FF3366") + afmt("PDF", "#F40F02", "#fff"))
     submit = esc(", ".join(st.get("submission", [])) or "WeTransfer, Dropbox or Adobe Creative Cloud")
+    # Guidelines bullets are driven by the booth JSON's settings (single source of
+    # truth); the official literals remain only as defaults when a setting is unset.
+    sizing_li = (f'<li>Build files at <b>{esc(scale_label(sc))}</b></li>'
+                 if st.get("scale") is not None
+                 else '<li>Build files at either <b>½ scale</b> or full scale</li>')
+    color_lis = ("".join(f"<li>{esc(x.strip())}</li>" for x in str(st["color_mode"]).split("/"))
+                 if st.get("color_mode") else "<li>CMYK</li><li>Pantone colors</li>")
+    fonts_li = (f'<li>{esc(st["fonts"])}</li>' if st.get("fonts")
+                else '<li>Convert all fonts to <b>outlines</b></li>')
     guide_bg = branding.brand_page_data_uri("guidelines_bg")
     guide_style = f" style=\"background:#fff url('{guide_bg}') center/cover no-repeat;\"" if guide_bg else ""
     guidelines_slide = f"""
@@ -382,19 +452,19 @@ def build_html(spec):
         <div class="ag-cols">
           <div class="ag-col">
             <div class="ag-h">Artwork Sizing &amp; Bleeds</div>
-            <ul><li>Build files at either <b>½ scale</b> or full scale</li>
-                <li>Add <b>{bleed*2:g}″ bleed</b> to the overall width &amp; height ({bleed:g}″ per side)</li>
+            <ul>{sizing_li}
+                <li>{bleed_bullet(bleed, sc)}</li>
                 <li>Keep logos &amp; text about <b>{esc(st.get('safe_margin_in',4))}″</b> in from the edges (safe area)</li></ul>
             <div class="ag-h">Color Formats</div>
-            <ul><li>CMYK</li><li>Pantone colors</li></ul>
+            <ul>{color_lis}</ul>
             <div class="ag-h">Text / Fonts</div>
-            <ul><li>Convert all fonts to <b>outlines</b></li></ul>
+            <ul>{fonts_li}</ul>
           </div>
           <div class="ag-col">
             <div class="ag-h">Accepted File Formats</div>
             <div class="ag-formats">{formats}</div>
             <div class="ag-h">Resolution &amp; Output</div>
-            <ul><li>{ppi.get('min',120)}–{ppi.get('max',150)} ppi at scale (no more than {ppi.get('max',150)})</li>
+            <ul><li>{esc(ppi.get('min',120))}–{esc(ppi.get('max',150))} ppi at scale (no more than {esc(ppi.get('max',150))})</li>
                 <li>Printer marks: {esc(st.get('printer_marks','disabled'))}</li></ul>
             <div class="ag-h">Artwork Submission</div>
             <ul><li>Submit final artwork via {submit}</li></ul>
@@ -411,7 +481,7 @@ def build_html(spec):
                     f'alt="Thank you — Southeast Exhibits &amp; Events"></section>') if thanks else ""
 
     slides = "".join([cover_slide, who_slide, info_slide, render3d_slide, render_slide,
-                      graphics_slide, guidelines_slide, thanks_slide])
+                      graphics_slide, howto_slide, guidelines_slide, thanks_slide])
 
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
       @page {{ size: 16in 9in; margin: 0; }}
@@ -474,6 +544,9 @@ def build_html(spec):
       .unv {{ color:{RED}; font-weight:700; font-size:12px; white-space:nowrap; }}
       .unvsize {{ color:{RED}; }}
       .disclaimer {{ margin-top:18px; color:#999; font-size:13px; border-top:1px solid #e2e2e2; padding-top:9px; }}
+      .draftrib {{ position:absolute; top:0.9in; right:-1.45in; width:6in; text-align:center; transform:rotate(30deg);
+                   background:{RED}; color:#fff; font-weight:800; font-size:30px; letter-spacing:.06em;
+                   padding:12px 0; z-index:9; box-shadow:0 3px 10px rgba(0,0,0,.3); }}
 
       .slide-full {{ padding:0; }}
       .fullbleed {{ width:16in; height:9in; object-fit:cover; display:block; }}
@@ -494,8 +567,17 @@ def build_html(spec):
 
 
 def main():
-    spec_path = sys.argv[1] if len(sys.argv) > 1 else find_default_spec()
-    spec = json.load(open(spec_path))
+    args = sys.argv[1:]
+    final = "--final" in args
+    unknown = [a for a in args if a.startswith("--") and a != "--final"]
+    if unknown:
+        print(f"Unknown option(s): {', '.join(unknown)}. "
+              "Usage: generate_spec_packet.py [booth_spec.json] [--final]")
+        sys.exit(2)
+    files = [a for a in args if not a.startswith("--")]
+    spec_path = files[0] if files else find_default_spec()
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
     spec["__source"] = os.path.basename(spec_path)
     base_dir = os.path.dirname(os.path.abspath(spec_path))
     def _uri(p):
@@ -516,18 +598,36 @@ def main():
     spec["__rendering_uri"] = items[0]["uri"] if items else ""   # back-compat (single image)
     spec["__rendering_3d_uri"] = _uri(spec.get("rendering_3d"))  # overall booth render (own page)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
-    html_path = os.path.abspath(f"{base}_Spec_Packet.html")
-    pdf_path = os.path.abspath(f"{base}_Spec_Packet.pdf")
     unv = proofer.unverified_panels(spec)
-    open(html_path, "w").write(build_html(spec))
+    if final and unv:
+        print(f"--final REFUSED: {len(unv)} panel(s) still UNVERIFIED ({', '.join(unv)}) — "
+              "a packet cannot be issued as final until a person confirms their dimensions.")
+        sys.exit(1)
+    reasons = draft_reasons(spec)
+    draft = bool(reasons) and not final
+    suffix = "_DRAFT" if draft else ""
+    html_path = os.path.abspath(f"{base}_Spec_Packet{suffix}.html")
+    pdf_path = os.path.abspath(f"{base}_Spec_Packet{suffix}.pdf")
+    try:
+        doc = build_html(spec, final=final)   # build BEFORE opening: an invalid
+    except spec_validate.SpecError as e:      # spec must leave NO partial file
+        spec_validate.report_and_exit(e)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(doc)   # flushed/closed before Chrome reads it via file://
     print("HTML:", html_path)
+    if draft:
+        print("⚠  DRAFT packet — not for the client yet. Unresolved: " + "; ".join(reasons)
+              + ". Outputs are suffixed _DRAFT (resolve the items, or pass --final once verified).")
     if unv:
         print(f"⚠  {len(unv)} UNVERIFIED panel(s) (AI/OCR-sourced): {', '.join(unv)} — confirm before sending to the client.")
 
     if render.html_to_pdf(html_path, pdf_path):
         print("PDF: ", pdf_path, f"({os.path.getsize(pdf_path)} bytes)")
+    elif render.chrome_available():
+        print("PDF render FAILED or timed out (see the render error above) — "
+              "open the HTML and Print -> Save as PDF.")
     else:
-        print("PDF step skipped — open the HTML and Print -> Save as PDF.")
+        print("PDF step skipped (Chrome not installed) — open the HTML and Print -> Save as PDF.")
 
 
 if __name__ == "__main__":

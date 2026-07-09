@@ -23,30 +23,117 @@ Usage:
     python3 make_proof.py <artwork> [--spec booth_spec.json] [--panel NAME]
         [--job "Name"] [--prepped-by "Name"] [--qc-by "Name"]
         [--version V] [--fulfillment delivery|pickup] [--approve "Client Name"]
+        [--ack-review "reason"]   # required to approve a NEEDS-REVIEW proof; recorded
+                                  # (ignored — not stamped or logged — on any other verdict)
     # whole job (assembled document)
     python3 make_proof.py <art1> <art2> ...           # or a folder, or --book
         [--spec ...] [--prepped-by N] [--qc-by N] [--version V] [--fulfillment ...]
+        [--allow-skips]           # accept (and disclose) files that could not be included
+
+Exit codes: 0 = success; 1 = refusal (approval gate) or skipped files without
+--allow-skips; 2 = usage error / unreadable input / no panel match.
 """
-import sys, os, re, json, glob, base64, subprocess, datetime, html, functools
+import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, tempfile
+import argparse
+import errno
+import fcntl, time
 import proofer
+import branding
 try:
     import openpyxl
 except Exception:
     openpyxl = None
 
-RED = proofer.branding.RED
-LOG = "proof_log.xlsx"
-VCOL = {"PASS": "#2E9E40", "REVIEW": "#F7941E", "FAIL": RED}
+RED = branding.RED
+LOG = "proof_log.xlsx"                    # basename - resolve via default_log_path()
+LOG_ENV = "SEE_PROOF_LOG"                 # overrides the log location
+FALLBACK_CSV = "proof_log_fallback.csv"   # written when the xlsx can't be
+# The one shared log-row contract (make_proof writes it, dashboard reads it).
+LOG_HEADER = ["Date", "Job", "Job #", "Panel / Item", "File", "Verdict", "Status",
+              "Proof version", "Prepped by", "QC'd by", "Approved by"]
+
+
+def default_log_path():
+    """The one place the proof log lives: $SEE_PROOF_LOG if set, else
+    proof_log.xlsx at the REPO ROOT (one level above tools/). A cwd-relative
+    path used to scatter records across job folders where the dashboard never
+    found them."""
+    env = os.environ.get(LOG_ENV)
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), LOG)
+
+
+# errnos that mean "another process holds the flock" and are worth retrying:
+# EWOULDBLOCK/EAGAIN per flock(2), plus EACCES which some platforms use for
+# the same condition. Anything else (e.g. ENOTSUP/ENOLCK on network mounts
+# that don't support flock at all) will NEVER clear, so retrying it just
+# stalls every log write for the full timeout and then refuses the approval.
+_LOCK_CONTENTION_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("EWOULDBLOCK", "EAGAIN", "EACCES"))
+    if e is not None)
+
+
+class _FileLock:
+    """Exclusive advisory lock (flock on LOG + '.lock') guarding the log's
+    load->append->save cycle - unlocked concurrent runs dropped each other's
+    rows, including APPROVED records the dashboard depends on. Blocks briefly,
+    then raises TimeoutError rather than hanging a proof run forever. If the
+    filesystem does not support flock (e.g. SEE_PROOF_LOG on a network mount
+    raising ENOTSUP), proceeds WITHOUT the lock rather than failing - a
+    single-writer setup still gets its row recorded."""
+
+    def __init__(self, target, timeout=10.0):
+        self.path = target + ".lock"
+        self.timeout = timeout
+        self.f = None
+        self.locked = False
+
+    def __enter__(self):
+        self.f = open(self.path, "a", encoding="utf-8")
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.locked = True
+                return self
+            except OSError as e:
+                if e.errno not in _LOCK_CONTENTION_ERRNOS:
+                    # flock unsupported/broken here - not contention; go on
+                    # unlocked instead of stalling the timeout and refusing
+                    self.f.close()
+                    self.f = None
+                    return self
+                if time.time() >= deadline:
+                    self.f.close()
+                    self.f = None
+                    raise TimeoutError(f"could not lock {self.path} within {self.timeout:g}s "
+                                       f"(another proof run holds it)")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.f is None:
+            return
+        try:
+            if self.locked:
+                fcntl.flock(self.f, fcntl.LOCK_UN)
+        finally:
+            self.f.close()
+# verdict badge colors come from the one check-status palette in proofer.BADGE
+# (P3-3: the values were hand-duplicated here and could drift)
+VCOL = {k: proofer.BADGE[k] for k in ("PASS", "REVIEW", "FAIL")}
 VLABEL = {"PASS": "PASS", "REVIEW": "NEEDS REVIEW", "FAIL": "FAIL"}
-CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas | Atlanta | NJ/NY | Dallas "
-           "&nbsp;·&nbsp; SouthEastExhibit.com")
+CONTACT = branding.CONTACT
 DISCLAIMER = ("This proof is for verifying CONTENT, LAYOUT, COLOR BREAK and SIZE only. On-screen color is "
               "not an exact match to the final printed piece. Check spelling, dimensions and finish "
               "carefully — your approval releases this file to print.")
 ART_EXT = (".pdf", ".ai", ".eps") + proofer.RASTER_EXT
 
 # literal placeholder / unfilled markers that must never reach a client
-PLACEHOLDER_RE = re.compile(r"\b(tbd|tba|todo|name here|placeholder|lorem|xxx+)\b|[<>]|\?\?\?", re.I)
+# (deliberately NOT 'n/a' - that is a legitimate value)
+PLACEHOLDER_RE = re.compile(
+    r"\b(tbd|tba|todo|name here|placeholder|lorem|xxx+|fpo|tk|fill ?in|change ?me|"
+    r"client name|your (?:name|logo|text))\b|[<>]|\?\?\?", re.I)
 
 
 def looks_placeholder(v):
@@ -105,6 +192,20 @@ def proof_readiness(specs, prepped_by, qc_by, material):
     return placeholders, missing
 
 
+def job_readiness(spec, job=None, version=None):
+    """Placeholder scan over the JOB-level fields that render on client proofs
+    (job name, client, show, job #, version) - these used to bypass the
+    per-panel placeholder gate. Returns the same \"Label = 'value'\" strings
+    proof_readiness produces, so callers can merge the two lists. Pure."""
+    j = spec.get("job", {})
+    fields = [("Job name", job if job is not None else j.get("name")),
+              ("Client", j.get("client")),
+              ("Show", j.get("show")),
+              ("Job #", j.get("job_number")),
+              ("Proof version", version if version is not None else j.get("version"))]
+    return [f"{label} = '{val}'" for label, val in fields if looks_placeholder(val)]
+
+
 def job_totals(items):
     """(# graphics, # pieces) for the cover - graphics = number of items,
     pieces = sum of each item's quantity (default 1). Pure function."""
@@ -134,7 +235,16 @@ def cover_rows(items):
 
 
 def thumbnail(path, ext, tag=""):
-    out = os.path.abspath(f"_proof_thumb{tag}.png")
+    """Rasterize the artwork to a UNIQUE temp PNG and return its path, or None.
+
+    The output must be verifiably produced by THIS run (gs returncode 0 and a
+    non-empty file that gs itself created) - a fixed cwd name used to let a
+    stale PNG from a crashed run, or a concurrent run in the same directory,
+    become another job's artwork on a client sign-off proof. None means the
+    proof shows '(preview unavailable)' instead of a wrong image. The caller
+    removes the returned file when done."""
+    fd, out = tempfile.mkstemp(prefix=f"_proof_thumb{tag}_", suffix=".png")
+    os.close(fd)
     try:
         if ext in proofer.RASTER_EXT:
             from PIL import Image
@@ -144,10 +254,16 @@ def thumbnail(path, ext, tag=""):
             im.thumbnail((1000, 1000))
             im.save(out)
         else:
-            subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
-                            "-dLastPage=1", "-o", out, path], capture_output=True)
-        return out if os.path.exists(out) else None
+            os.remove(out)  # gs must CREATE the file - never trust a pre-existing one
+            p = subprocess.run(["gs", "-q", "-sDEVICE=png16m", "-r60", "-dFirstPage=1",
+                                "-dLastPage=1", "-o", out, path], capture_output=True)
+            if p.returncode != 0:
+                raise RuntimeError(f"gs exited {p.returncode}")
+        if not (os.path.exists(out) and os.path.getsize(out) > 0):
+            raise RuntimeError("no thumbnail output produced")
+        return out
     except Exception:
+        _cleanup(out)
         return None
 
 
@@ -155,106 +271,153 @@ def b64img(p):
     return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode() if p else ""
 
 
-@functools.lru_cache(maxsize=1)
-def _logo_data_uri():
-    """Find the SEE logo PNG and return it as a data URI, else '' (the proof
-    falls back to a text wordmark). Looks in assets/ next to the tools/ dir, the
-    repo root, and cwd - so it works regardless of where the tool is run."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    seen = []
-    for d in (os.path.join(here, "..", "assets"), os.path.join(os.getcwd(), "assets"),
-              here, os.path.join(here, ".."), os.getcwd()):
-        seen += sorted(glob.glob(os.path.join(d, "see_logo.png")))
-        seen += sorted(glob.glob(os.path.join(d, "*[Ll]ogo*.png")))
-    for p in seen:
-        try:
-            return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode()
-        except OSError:
-            continue
-    return ""
+# P3-3: one logo lookup for every generated document — branding.logo_data_uri
+# (which searches only the canonical assets/see_logo.png locations, never a
+# cwd wildcard that could embed a client's own logo file).
+_logo_data_uri = branding.logo_data_uri
 
 
-def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver):
+def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver,
+              today=None):
+    """Append one row to the proof log; returns where the row landed.
+    `today` (a datetime.date, injectable for tests — mirrors dashboard.py)
+    defaults to the real date.
+
+    The whole load->append->save cycle holds an exclusive flock, and NO record
+    is ever lost: when openpyxl is missing or the workbook can't be loaded or
+    saved (locked/corrupt), the same row is appended to proof_log_fallback.csv
+    next to the log and the returned note names it. Raises only when NEITHER
+    destination could be written - the approve path then refuses to stamp
+    (via _log_proof_safe)."""
+    path = default_log_path()
+    today = today or datetime.date.today()
+    row = [today.isoformat() if hasattr(today, "isoformat") else str(today),
+           job, job_no or "", panel,
+           os.path.basename(fname), verdict, status, version or "",
+           prepped or "", qc or "", approver or ""]
+    with _FileLock(path):
+        if openpyxl:
+            try:
+                if os.path.exists(path):
+                    wb = openpyxl.load_workbook(path); ws = wb.active
+                else:
+                    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Proofs"
+                    ws.append(LOG_HEADER)
+                ws.append(row)
+                wb.save(path)
+                return path
+            except Exception as e:
+                xlsx_err = f"{type(e).__name__}: {e}"
+        else:
+            xlsx_err = "openpyxl missing"
+        # CSV fallback - the record must not be lost
+        csv_path = os.path.join(os.path.dirname(path) or ".", FALLBACK_CSV)
+        new = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(LOG_HEADER)
+            w.writerow(row)
+        return f"{csv_path} (xlsx unavailable: {xlsx_err})"
+
+
+def _annotate_last_log_row(fname, panel, status, note):
+    """Append `note` to the Status of the MOST RECENT xlsx log row matching
+    (File, Panel / Item, Status) — the approve path logs BEFORE rendering (an
+    approval that can't be logged must not stamp), so when the PDF render then
+    fails its row needs a follow-up annotation (P1-4). Same flock as
+    log_proof. Returns True when the row was updated in place; False when it
+    couldn't be (openpyxl missing, the row landed in the CSV fallback, the
+    workbook is locked/corrupt) so the caller appends a follow-up row
+    instead — the outcome is recorded either way."""
     if not openpyxl:
-        return "(openpyxl missing - log skipped)"
-    header = ["Date", "Job", "Job #", "Panel / Item", "File", "Verdict", "Status",
-              "Proof version", "Prepped by", "QC'd by", "Approved by"]
-    if os.path.exists(LOG):
-        wb = openpyxl.load_workbook(LOG); ws = wb.active
-    else:
-        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Proofs"
-        ws.append(header)
-    ws.append([datetime.date.today().isoformat(), job, job_no or "", panel,
-               os.path.basename(fname), verdict, status, version or "",
-               prepped or "", qc or "", approver or ""])
-    wb.save(LOG)
-    return LOG
+        return False
+    path = default_log_path()
+    base = os.path.basename(fname)
+    f_col = LOG_HEADER.index("File") + 1
+    p_col = LOG_HEADER.index("Panel / Item") + 1
+    s_col = LOG_HEADER.index("Status") + 1
+    try:
+        with _FileLock(path):
+            if not os.path.exists(path):
+                return False
+            wb = openpyxl.load_workbook(path)
+            ws = wb.active
+            for r in range(ws.max_row, 1, -1):
+                if (ws.cell(r, f_col).value == base and ws.cell(r, p_col).value == panel
+                        and ws.cell(r, s_col).value == status):
+                    ws.cell(r, s_col).value = status + note
+                    wb.save(path)
+                    return True
+            return False
+    except Exception:
+        return False
 
 
-CSS_PROOF = """
-  @page { size: letter portrait; margin: 0.5in; }
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; font-size:12px; margin:0; }
-  .page { page-break-after: always; }
-  .page:last-child { page-break-after: auto; }
-  .pill { background:#E31D3D; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }
-  h1 { font-size:19px; margin:9px 0 1px; }
-  .meta { color:#555; font-size:11px; margin:1px 0 0; }
-  .verdict { display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }
-  .legend { font-size:10px; color:#666; margin-left:8px; }
-  .legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }
-  .banner { margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
-            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }
-  .caution { margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid #E31D3D; border-left:6px solid #E31D3D;
-             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }
-  .cols { display:flex; gap:15px; margin-top:6px; }
-  .art { flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }
-  .art img { max-width:100%; max-height:330px; }
-  .noimg { color:#999; padding:40px 0; }
-  .right { flex:1; }
-  .blk { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#888; font-weight:700; margin:0 0 4px; }
-  table { width:100%; border-collapse:collapse; }
-  table.spec { margin-bottom:13px; }
-  table.spec td { padding:4px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }
-  td.sl { color:#666; width:42%; }
-  td.sv { font-weight:700; }
-  table.chk th { background:#f3f3f3; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; font-size:9.5px; text-transform:uppercase; }
-  table.chk td { padding:5px 8px; border-bottom:1px solid #ececec; vertical-align:top; }
-  td.ck { font-weight:700; width:20%; }
-  .b { color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }
-  .msg { font-size:10px; }
-  ol.fixlist { margin:7px 0 0; padding-left:18px; }
-  ol.fixlist li { font-size:10px; margin:3px 0; color:#7a4a00; }
-  .signbox { margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }
-  .sign .st { font-weight:700; color:#E31D3D; margin-bottom:7px; }
-  .sign .opt { margin-bottom:5px; font-size:12px; }
-  .sign .lines { margin:11px 0 9px; }
-  .sign .chg { color:#555; }
-  .stamp { display:inline-block; border:3px solid #2E9E40; color:#2E9E40; font-weight:800; font-size:17px; padding:7px 16px; border-radius:8px; letter-spacing:.04em; }
-  .locknote { color:#7a0d12; font-size:11px; margin-top:8px; }
-  footer { margin-top:14px; border-top:1px solid #ddd; padding-top:7px; }
-  .ftgrid { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:10px; }
-  .ftgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
-  .ftgrid div b { font-size:11px; }
-  .contact { color:#999; font-size:9px; margin-top:7px; }
+CSS_PROOF = f"""
+  @page {{ size: letter portrait; margin: 0.5in; }}
+  body {{ font-family: {branding.FONT_STACK}; color:#1a1a1a; font-size:12px; margin:0; }}
+  .page {{ page-break-after: always; }}
+  .page:last-child {{ page-break-after: auto; }}
+  .pill {{ background:{RED}; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }}
+  h1 {{ font-size:19px; margin:9px 0 1px; }}
+  .meta {{ color:#555; font-size:11px; margin:1px 0 0; }}
+  .verdict {{ display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }}
+  .legend {{ font-size:10px; color:#666; margin-left:8px; }}
+  .legend .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }}
+  .banner {{ margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
+            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }}
+  .caution {{ margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid {RED}; border-left:6px solid {RED};
+             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }}
+  .cols {{ display:flex; gap:15px; margin-top:6px; }}
+  .art {{ flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }}
+  .art img {{ max-width:100%; max-height:330px; }}
+  .noimg {{ color:#999; padding:40px 0; }}
+  .right {{ flex:1; }}
+  .blk {{ font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#888; font-weight:700; margin:0 0 4px; }}
+  table {{ width:100%; border-collapse:collapse; }}
+  table.spec {{ margin-bottom:13px; }}
+  table.spec td {{ padding:4px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }}
+  td.sl {{ color:#666; width:42%; }}
+  td.sv {{ font-weight:700; }}
+  table.chk th {{ background:#f3f3f3; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; font-size:9.5px; text-transform:uppercase; }}
+  table.chk td {{ padding:5px 8px; border-bottom:1px solid #ececec; vertical-align:top; }}
+  td.ck {{ font-weight:700; width:20%; }}
+  .b {{ color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }}
+  .msg {{ font-size:10px; }}
+  ol.fixlist {{ margin:7px 0 0; padding-left:18px; }}
+  ol.fixlist li {{ font-size:10px; margin:3px 0; color:#7a4a00; }}
+  .signbox {{ margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }}
+  .sign .st {{ font-weight:700; color:{RED}; margin-bottom:7px; }}
+  .sign .opt {{ margin-bottom:5px; font-size:12px; }}
+  .sign .lines {{ margin:11px 0 9px; }}
+  .sign .chg {{ color:#555; }}
+  .stamp {{ display:inline-block; border:3px solid #2E9E40; color:#2E9E40; font-weight:800; font-size:17px; padding:7px 16px; border-radius:8px; letter-spacing:.04em; }}
+  .locknote {{ color:#7a0d12; font-size:11px; margin-top:8px; }}
+  footer {{ margin-top:14px; border-top:1px solid #ddd; padding-top:7px; }}
+  .ftgrid {{ display:flex; flex-wrap:wrap; gap:6px 18px; font-size:10px; }}
+  .ftgrid div span {{ display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }}
+  .ftgrid div b {{ font-size:11px; }}
+  .contact {{ color:#999; font-size:9px; margin-top:7px; }}
   /* cover */
-  .brandrow { display:flex; justify-content:space-between; align-items:center; }
-  .wordmark { font-size:18px; font-weight:800; color:#E31D3D; letter-spacing:.01em; }
-  .logo { height:56px; width:auto; display:block; margin-bottom:4px; }
-  .logosm { height:30px; width:auto; }
-  .phead { display:flex; justify-content:space-between; align-items:center; }
-  .coverhead { color:#999; font-size:9px; margin-top:2px; }
-  h1.cv { font-size:23px; margin:16px 0 2px; }
-  .jobgrid { display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }
-  .jobgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
-  .jobgrid div b { font-size:12.5px; }
-  .totals { margin:14px 0 6px; font-size:13px; }
-  .totals b { color:#E31D3D; }
-  table.summary th { background:#E31D3D; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }
-  table.summary td { padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }
-  table.summary tr:nth-child(even) td { background:#fafafa; }
-  table.summary .muted { color:#c0392b; font-weight:700; }
-  .howto { margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }
-  .howto b { color:#E31D3D; }
+  .brandrow {{ display:flex; justify-content:space-between; align-items:center; }}
+  .wordmark {{ font-size:18px; font-weight:800; color:{RED}; letter-spacing:.01em; }}
+  .logo {{ height:56px; width:auto; display:block; margin-bottom:4px; }}
+  .logosm {{ height:30px; width:auto; }}
+  .phead {{ display:flex; justify-content:space-between; align-items:center; }}
+  .coverhead {{ color:#999; font-size:9px; margin-top:2px; }}
+  h1.cv {{ font-size:23px; margin:16px 0 2px; }}
+  .jobgrid {{ display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }}
+  .jobgrid div span {{ display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }}
+  .jobgrid div b {{ font-size:12.5px; }}
+  .totals {{ margin:14px 0 6px; font-size:13px; }}
+  .totals b {{ color:{RED}; }}
+  table.summary th {{ background:{RED}; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }}
+  table.summary td {{ padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }}
+  table.summary tr:nth-child(even) td {{ background:#fafafa; }}
+  table.summary .muted {{ color:#c0392b; font-weight:700; }}
+  .howto {{ margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }}
+  .howto b {{ color:{RED}; }}
 """
 
 HEAD = '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF + '</style></head><body>'
@@ -281,11 +444,13 @@ def _item_footer(meta, today, job_no):
       </footer>"""
 
 
-def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
+def _item_body(job, res, spec, thumb_b64, approve, meta, logo="", today=None):
     """One item's page (no <html>/<body> wrapper) - a <section class='page'>.
     `logo` (a data URI) shows a small mark in the header for a standalone proof;
-    in the job document the cover carries the logo, so item pages pass ''."""
-    today = datetime.date.today().strftime("%B %d, %Y")
+    in the job document the cover carries the logo, so item pages pass ''.
+    `today` (a preformatted display string, injectable for golden tests —
+    mirrors dashboard.py's injectable today) defaults to the real date."""
+    today = today or datetime.date.today().strftime("%B %d, %Y")
     verdict = res["verdict"]
     panel = res["panel"]
     specs = meta["specs"]
@@ -309,7 +474,11 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
                        for f in fixes)
         fix_block = f'<div class="blk">What to change</div><ol class="fixlist">{flis}</ol>'
     if approve:
+        ack = meta.get("ack_review")
+        ack_html = (f'<div class="locknote">NEEDS-REVIEW items acknowledged before approval — '
+                    f'reason: {html.escape(str(ack))}</div>' if ack else '')
         signoff = (f'<div class="stamp">APPROVED &nbsp;·&nbsp; {html.escape(approve)} &nbsp;·&nbsp; {today}</div>'
+                   f'{ack_html}'
                    f'<div class="locknote">Locked on approval. Any change after this requires written approval '
                    f'and may trigger an add-on charge.</div>')
     else:
@@ -355,14 +524,19 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo=""):
     </section>"""
 
 
-def build_proof_html(job, res, spec, thumb_b64, approve, meta):
-    """Single-item proof (full HTML document)."""
-    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta, logo=_logo_data_uri()) + FOOT
+def build_proof_html(job, res, spec, thumb_b64, approve, meta, today=None):
+    """Single-item proof (full HTML document). `today` is injectable (P2-6)."""
+    return HEAD + _item_body(job, res, spec, thumb_b64, approve, meta,
+                             logo=_logo_data_uri(), today=today) + FOOT
 
 
-def _cover_body(job, spec, items, meta):
-    """The job COVER / summary page (a <section class='page'>)."""
-    today = datetime.date.today().strftime("%B %d, %Y")
+def _cover_body(job, spec, items, meta, unmatched=None, today=None):
+    """The job COVER / summary page (a <section class='page'>). `unmatched`
+    (list of 'filename (reason)' strings) renders a red caution block - a
+    client signing off the job must SEE which files the proof does not cover,
+    not just a console line the designer saw. `today` (display string) is
+    injectable for golden tests; defaults to the real date."""
+    today = today or datetime.date.today().strftime("%B %d, %Y")
     logo = _logo_data_uri()
     brand = (f'<img class="logo" src="{logo}">' if logo
              else '<div class="wordmark">Southeast Exhibits &amp; Events</div>')
@@ -384,6 +558,13 @@ def _cover_body(job, spec, items, meta):
         srows += (f'<tr><td>{i}</td><td><b>{html.escape(name)}</b></td><td>{html.escape(size)}</td>'
                   f'<td{mcls}>{html.escape(material)}</td><td>{html.escape(sides)}</td><td>{html.escape(qty)}</td></tr>')
 
+    skipped_html = ""
+    if unmatched:
+        names = "; ".join(html.escape(str(u)) for u in unmatched)
+        skipped_html = (f'<div class="caution">&#9888; NOT INCLUDED in this proof: {names} — '
+                        f'these files could not be checked. Do not sign off this job until '
+                        f'every graphic is accounted for.</div>')
+
     return f"""<section class="page cover">
       <div class="brandrow">
         <div>{brand}
@@ -393,6 +574,7 @@ def _cover_body(job, spec, items, meta):
       <h1 class="cv">{html.escape(job)}</h1>
       <div class="jobgrid">{jobgrid}</div>
       <div class="totals">This proof covers <b>{n_graphics}</b> graphic(s) — <b>{n_pieces}</b> piece(s) total.</div>
+      {skipped_html}
       <table class="summary"><thead><tr><th>#</th><th>Item</th><th>Finish size (H × W)</th><th>Material</th><th>Sides</th><th>Qty</th></tr></thead>
         <tbody>{srows}</tbody></table>
       <div class="howto"><b>How to review:</b> Each graphic is on its own page that follows. For every item,
@@ -405,15 +587,17 @@ def _cover_body(job, spec, items, meta):
     </section>"""
 
 
-def build_job_html(job, spec, items, approve, base_meta):
-    """Whole-job document: cover page + one page per item, with Page X of Y."""
+def build_job_html(job, spec, items, approve, base_meta, unmatched=None, today=None):
+    """Whole-job document: cover page + one page per item, with Page X of Y.
+    `unmatched` files are disclosed in a caution block on the cover.
+    `today` is injectable (P2-6) and threads to the cover and every item page."""
     pages = len(items) + 1
     base_meta = dict(base_meta, pages=pages)
-    out = HEAD + _cover_body(job, spec, items, base_meta)
+    out = HEAD + _cover_body(job, spec, items, base_meta, unmatched, today=today)
     for idx, it in enumerate(items):
         meta = dict(base_meta, specs=it["specs"], placeholders=it["placeholders"],
                     missing=it["missing"], page=idx + 2, pages=pages)
-        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta)
+        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta, today=today)
     return out + FOOT
 
 
@@ -431,88 +615,177 @@ def collect_files(raw):
     return files
 
 
-def main():
-    args = sys.argv[1:]
-    spec_path = panel_arg = job = approve = None
-    prepped_by = qc_by = version = fulfillment = None
-    book = False
-    raw = []
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "--spec":
-            spec_path = args[i + 1]; i += 2
-        elif a == "--panel":
-            panel_arg = args[i + 1]; i += 2
-        elif a == "--job":
-            job = args[i + 1]; i += 2
-        elif a == "--approve":
-            approve = args[i + 1]; i += 2
-        elif a in ("--prepped-by", "--prepped"):
-            prepped_by = args[i + 1]; i += 2
-        elif a in ("--qc-by", "--qc"):
-            qc_by = args[i + 1]; i += 2
-        elif a == "--version":
-            version = args[i + 1]; i += 2
-        elif a == "--fulfillment":
-            fulfillment = args[i + 1]; i += 2
-        elif a == "--book":
-            book = True; i += 1
-        else:
-            raw.append(a); i += 1
-    files = collect_files(raw)
-    if not files:
-        print('usage: python3 make_proof.py <artwork ...> [--spec ...] [--panel NAME] [--job "Name"]\n'
-              '       [--prepped-by "Name"] [--qc-by "Name"] [--version V]\n'
-              '       [--fulfillment delivery|pickup] [--approve "Client Name"] [--book]')
-        return
-    spec = json.load(open(spec_path or proofer.find_default_spec()))
-    job = job or spec.get("job", {}).get("name", "Untitled job")
-    version = version or spec.get("job", {}).get("version")
-    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
-    base_meta = {"prepped_by": prepped_by, "qc_by": qc_by, "version": version,
-                 "fulfillment": fulfillment}
+def main(argv=None):
+    # argparse (the old hand-rolled loop turned a typo'd flag into a "file",
+    # silently flipping to job mode and DROPPING --approve; a trailing flag
+    # raised IndexError). Unknown flags now exit 2 with usage.
+    ap = argparse.ArgumentParser(
+        prog="make_proof.py", allow_abbrev=False,
+        description="Build a branded client proof: one page per artwork item, "
+                    "checked against the booth spec. Several files (or a folder, "
+                    "or --book) build the whole-job document.")
+    ap.add_argument("artwork", nargs="+", help="artwork file(s) and/or folder(s)")
+    ap.add_argument("--spec", help="booth spec JSON (default: auto-discovered)")
+    ap.add_argument("--panel", help="panel name (single item; job mode matches by filename)")
+    ap.add_argument("--job", help="job name (default: from the spec)")
+    ap.add_argument("--approve", metavar="NAME",
+                    help="stamp APPROVED by NAME (single item; gated + logged)")
+    ap.add_argument("--ack-review", dest="ack_review", metavar="REASON",
+                    help="acknowledge a NEEDS-REVIEW verdict with a recorded reason")
+    ap.add_argument("--prepped-by", "--prepped", dest="prepped_by", metavar="NAME")
+    ap.add_argument("--qc-by", "--qc", dest="qc_by", metavar="NAME")
+    ap.add_argument("--version", dest="version", metavar="V",
+                    help="proof version (also suffixes the output name)")
+    ap.add_argument("--fulfillment", choices=("delivery", "pickup"))
+    ap.add_argument("--book", action="store_true",
+                    help="build the whole-job document even for a single file")
+    ap.add_argument("--allow-skips", dest="allow_skips", action="store_true",
+                    help="job mode: exit 0 even when files were skipped (still disclosed)")
+    a = ap.parse_args(argv)
 
-    if len(files) > 1 or book:
-        build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg)
+    files = collect_files(a.artwork)
+    if not files:
+        ap.error("no artwork files found in the given path(s)")
+    spec_path = a.spec or proofer.find_default_spec()
+    print(f"Spec: {spec_path}")
+    try:
+        with open(spec_path, encoding="utf-8") as f:
+            spec = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"could not read the booth spec {spec_path}: {e}", file=sys.stderr)
+        sys.exit(2)
+    job = a.job or spec.get("job", {}).get("name", "Untitled job")
+    version = a.version or spec.get("job", {}).get("version")
+    job_no = spec.get("job", {}).get("job_number") or spec.get("job", {}).get("estimate")
+    base_meta = {"prepped_by": a.prepped_by, "qc_by": a.qc_by, "version": version,
+                 "fulfillment": a.fulfillment, "ack_review": a.ack_review}
+
+    job_mode = len(files) > 1 or a.book
+    if job_mode and a.panel and len(files) != 1:
+        print("--panel names ONE panel, but job mode matches each file to a panel by "
+              "FILENAME. Run one file at a time with --panel, or drop --panel.",
+              file=sys.stderr)
+        sys.exit(2)
+    if job_mode:
+        rc = build_job_proof(files, spec, job, job_no, a.approve, base_meta, a.panel,
+                             allow_skips=a.allow_skips)
     else:
-        build_single_proof(files[0], spec, job, job_no, approve, base_meta, panel_arg)
+        rc = build_single_proof(files[0], spec, job, job_no, a.approve, base_meta, a.panel)
+    if rc:
+        sys.exit(rc)
+
+
+def safe_stem(name):
+    """Filename stem sanitized for output names. Keeps '-' and '.' so distinct
+    artworks stay distinct ('F 1.pdf' -> F_1, 'F-1.pdf' -> F-1 - the old
+    collapse-everything-to-_ made both write the SAME proof file)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("_") or "artwork"
+
+
+def _backup_existing(path):
+    """Rename an existing output aside with a timestamp instead of overwriting
+    it (an APPROVED proof is a signed record - never silently replaced).
+    Returns the backup path or None."""
+    if not os.path.exists(path):
+        return None
+    root, ext = os.path.splitext(path)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak = f"{root}_superseded_{ts}{ext}"
+    os.replace(path, bak)
+    print(f"note: existing {os.path.basename(path)} renamed to {os.path.basename(bak)} "
+          f"(an approved proof is never silently overwritten)")
+    return bak
 
 
 def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
+    """Returns an exit status: 0 success, 1 approval refusal, 2 unreadable/no
+    panel match (the refusal/error paths used to 'return' -> exit 0, so a
+    scripted approve-then-email flow treated a refusal as success)."""
     ext = os.path.splitext(fname)[1].lower()
     try:
         res = proofer.run_checks(fname, spec, panel_arg)
     except Exception as e:
-        print("could not read file:", e); return
+        print("could not read file:", e); return 2
+    if res and res.get("error"):
+        print(res["error"]); return 2
     if not res:
-        print("could not match to a panel — re-run with --panel NAME"); return
+        print("could not match to a panel — re-run with --panel NAME"); return 2
     panel = res["panel"]
-    specs = panel_specs(panel, spec, base_meta.get("version"))
-    placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
-                                            base_meta.get("qc_by"), panel.get("finish"))
-    if panel.get("needs_confirm"):
-        missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
+    refusal, specs, placeholders, missing = approval_decision(
+        res, spec, job, fname, approve, base_meta)
+    if refusal:
+        print(refusal); return 1
+    ack_review = base_meta.get("ack_review")
+    if ack_review and res["verdict"] != "REVIEW":
+        # P0-8: an acknowledgment only applies to a NEEDS-REVIEW verdict. On
+        # any other verdict it is ignored ENTIRELY (never stamped on the proof
+        # or logged) — otherwise `--approve X --ack-review "TBD"` on a clean
+        # PASS would print a false "NEEDS-REVIEW items acknowledged" line on
+        # the client-facing proof and record it in the log. When the reason
+        # WILL be recorded (REVIEW verdict + --approve), approval_decision has
+        # already refused a blank/placeholder reason above.
+        print(f"note: --ack-review ignored — preflight verdict is {res['verdict']}, "
+              f"nothing was under review (the reason is not stamped on the proof or logged).")
+        ack_review = None
+        base_meta = dict(base_meta, ack_review=None)   # keep it off the rendered proof too
+
+    status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
+    if approve and ack_review:
+        status = f"APPROVED (REVIEW acknowledged: {ack_review})"
     if approve:
-        msg = _approval_block(res, placeholders, missing, os.path.basename(fname))
-        if msg:
-            print(msg); return
+        # log BEFORE stamping: an approval that cannot be logged must not ship
+        logged, log_ok = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"],
+                                         status, base_meta.get("version"),
+                                         base_meta.get("prepped_by"), base_meta.get("qc_by"),
+                                         approve)
+        if not log_ok:
+            print(f"⛔ Refusing to stamp APPROVED: the approval could not be logged {logged}.\n"
+                  f"   Every approval must be recorded in {default_log_path()} (or its CSV "
+                  f"fallback) — fix the log location/permissions and re-run.")
+            return 1
 
     thumb = thumbnail(fname, ext)
-    meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
-    page = build_proof_html(job, res, spec, b64img(thumb), approve, meta)
-    _cleanup(thumb)
+    try:
+        meta = dict(base_meta, specs=specs, placeholders=placeholders, missing=missing, page=1, pages=1)
+        page = build_proof_html(job, res, spec, b64img(thumb), approve, meta)
+    finally:
+        _cleanup(thumb)
 
-    base = re.sub(r"[^A-Za-z0-9]+", "_", os.path.splitext(os.path.basename(fname))[0]).strip("_")
-    suffix = "_PROOF_APPROVED" if approve else "_PROOF"
+    base = safe_stem(os.path.splitext(os.path.basename(fname))[0])
+    ver = base_meta.get("version")
+    vtag = f"_v{safe_stem(ver)}" if ver else ""
+    suffix = f"_PROOF{vtag}" + ("_APPROVED" if approve else "")
     hp = os.path.abspath(base + suffix + ".html")
     pp = os.path.abspath(base + suffix + ".pdf")
-    open(hp, "w").write(page)
-    status = "APPROVED" if approve else f"PROOFED ({res['verdict']})"
-    logged = log_proof(job, job_no, panel["name"], fname, res["verdict"], status,
-                       base_meta.get("version"), base_meta.get("prepped_by"),
-                       base_meta.get("qc_by"), approve)
+    if approve:
+        # a previously APPROVED proof at this name is a signed record - keep it
+        _backup_existing(hp)
+        _backup_existing(pp)
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(page)
     ok = proofer.render_pdf(hp, pp)
+    if approve and not ok:
+        # P1-4: the approve path logged BEFORE the render (see above), so a
+        # failed render would leave its row promising a PDF that was never
+        # produced. Annotate that row's Status in place (same wording as the
+        # non-approve path below); when it can't be updated (CSV fallback,
+        # locked workbook) append a follow-up row instead.
+        note = " — PDF render failed (HTML only)"
+        if _annotate_last_log_row(fname, panel["name"], status, note):
+            logged = f"{logged} (Status annotated: PDF render failed, HTML only)"
+        else:
+            logged, _ = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"],
+                                        status + note, base_meta.get("version"),
+                                        base_meta.get("prepped_by"), base_meta.get("qc_by"),
+                                        approve)
+    if not approve:
+        # log AFTER the render so the row's Status reflects what actually exists
+        # (the approve path logs BEFORE stamping instead - see above)
+        if not ok:
+            status += " — PDF render failed (HTML only)"
+        logged, _ = _log_proof_safe(job, job_no, panel["name"], fname, res["verdict"], status,
+                                    base_meta.get("version"), base_meta.get("prepped_by"),
+                                    base_meta.get("qc_by"), approve)
     print(f"\nItem {panel['name']}  ·  verdict {res['verdict']}  ·  " +
           (f"APPROVED by {approve}" if approve else "awaiting client sign-off"))
     if not approve and (placeholders or missing):
@@ -520,26 +793,36 @@ def build_single_proof(fname, spec, job, job_no, approve, base_meta, panel_arg):
               + "\n   - ".join(placeholders + [f"{m} not set" for m in missing]))
     print("Proof sheet:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
     print("Logged to  :", logged)
+    return 0
 
 
-def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
+def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg, allow_skips=False):
+    """Returns an exit status: 0 success, 1 skipped files without --allow-skips,
+    2 nothing matched at all. `panel_arg` is honored only when exactly one file
+    was given (job mode otherwise matches by filename - main() rejects the
+    ambiguous combination up front)."""
     if approve:
         print("note: --approve is for a single item; the job document is a draft for per-item sign-off. Ignoring --approve.")
         approve = None
     panel_index = {p["name"]: i for i, p in enumerate(spec.get("panels", []))}
+    job_placeholders = job_readiness(spec, job, base_meta.get("version"))
     items, unmatched = [], []
+    explicit_panel = panel_arg if len(files) == 1 else None
     for n, fname in enumerate(files):
         ext = os.path.splitext(fname)[1].lower()
         try:
-            res = proofer.run_checks(fname, spec, None)
+            res = proofer.run_checks(fname, spec, explicit_panel)
         except Exception as e:
-            unmatched.append(f"{os.path.basename(fname)} ({e})"); continue
+            unmatched.append(f"{os.path.basename(fname)} (could not be read: {e})"); continue
+        if res and res.get("error"):
+            unmatched.append(f"{os.path.basename(fname)} ({res['error']})"); continue
         if not res:
-            unmatched.append(os.path.basename(fname)); continue
+            unmatched.append(f"{os.path.basename(fname)} (no matching panel)"); continue
         panel = res["panel"]
         specs = panel_specs(panel, spec, base_meta.get("version"))
         placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
                                                 base_meta.get("qc_by"), panel.get("finish"))
+        placeholders = job_placeholders + placeholders
         if panel.get("needs_confirm"):
             missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
         thumb = thumbnail(fname, ext, tag=str(n))
@@ -547,45 +830,123 @@ def build_job_proof(files, spec, job, job_no, approve, base_meta, panel_arg):
                       "placeholders": placeholders, "missing": missing,
                       "thumb_b64": b64img(thumb), "_thumb": thumb})
     if not items:
-        print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel"); return
+        print("no files matched a panel — name them after the panel (e.g. F1.pdf) or use the single-item mode with --panel")
+        if unmatched:
+            print("  skipped:", ", ".join(unmatched))
+        return 2
     items.sort(key=lambda it: panel_index.get(it["panel"]["name"], 999))
 
-    html_doc = build_job_html(job, spec, items, approve, base_meta)
-    for it in items:
-        _cleanup(it.get("_thumb"))
+    try:
+        html_doc = build_job_html(job, spec, items, approve, base_meta, unmatched)
+    finally:
+        for it in items:
+            _cleanup(it.get("_thumb"))
 
-    base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_") or "Job"
-    hp = os.path.abspath(base + "_JOB_PROOF.html")
-    pp = os.path.abspath(base + "_JOB_PROOF.pdf")
-    open(hp, "w").write(html_doc)
-    for it in items:
-        log_proof(job, job_no, it["panel"]["name"], it["fname"], it["res"]["verdict"],
-                  "PROOFED (job doc)", base_meta.get("version"),
-                  base_meta.get("prepped_by"), base_meta.get("qc_by"), None)
+    base = safe_stem(job)
+    ver = base_meta.get("version")
+    vtag = f"_v{safe_stem(ver)}" if ver else ""
+    hp = os.path.abspath(base + "_JOB_PROOF" + vtag + ".html")
+    pp = os.path.abspath(base + "_JOB_PROOF" + vtag + ".pdf")
+    with open(hp, "w", encoding="utf-8") as f:
+        f.write(html_doc)
     ok = proofer.render_pdf(hp, pp)
+    # log AFTER the render so the rows' Status reflects what actually exists
+    status = "PROOFED (job doc)" + ("" if ok else " — PDF render failed (HTML only)")
+    logged = None
+    for it in items:
+        logged, _ = _log_proof_safe(job, job_no, it["panel"]["name"], it["fname"],
+                                    it["res"]["verdict"], status, base_meta.get("version"),
+                                    base_meta.get("prepped_by"), base_meta.get("qc_by"), None)
     n_graphics, n_pieces = job_totals(items)
     print(f"\nJOB PROOF · {job}")
     print(f"  {n_graphics} item(s), {n_pieces} piece(s) · {len(items) + 1} pages (cover + {len(items)})")
     for it in items:
         flag = "  ⚠ not client-ready" if (it["placeholders"] or it["missing"]) else ""
-        print(f"    - {it['panel']['name']:14} {it['res']['verdict']}{flag}")
+        how = it["res"].get("how", "?")
+        print(f"    - {it['panel']['name']:14} {it['res']['verdict']} [{how}]{flag}")
     if unmatched:
-        print("  unmatched (skipped):", ", ".join(unmatched))
+        print("  ⚠ NOT INCLUDED (disclosed on the proof cover):", ", ".join(unmatched))
     print("Document:", os.path.basename(pp) if ok else os.path.basename(hp) + " (open + print to PDF)")
+    if logged:
+        print("Logged to  :", logged)
+    if unmatched and not allow_skips:
+        print(f"{len(unmatched)} file(s) could not be included — fix them, or re-run with "
+              f"--allow-skips to accept the disclosed omission. Exiting nonzero.")
+        return 1
+    return 0
 
 
-def _approval_block(res, placeholders, missing, fname):
-    """Return a refusal message if this item can't be locked-approved, else None."""
+def approval_decision(res, spec, job, fname, approve, base_meta):
+    """The COMPLETE approval-gate decision for one checked item, as a PURE
+    function — no I/O, no Chrome/gs — so invariant 4 (approval must refuse
+    when a check fails or a measurement is unconfirmed) is testable end to
+    end (P2-3). Combines the readiness scan (placeholder values on panel and
+    job fields, missing prepped-by/QC names, needs_confirm dimensions) with
+    the approver-name validation and the _approval_block refusals
+    (FAIL / non-PASS size / un-acked REVIEW; ack_review comes from base_meta).
+
+    Returns (refusal, specs, placeholders, missing): `refusal` is a printable
+    refusal message, or None when approval may proceed (or when no approval
+    was requested); specs/placeholders/missing feed the proof page and the
+    not-client-ready warning either way."""
+    panel = res["panel"]
+    specs = panel_specs(panel, spec, base_meta.get("version"))
+    placeholders, missing = proof_readiness(specs, base_meta.get("prepped_by"),
+                                            base_meta.get("qc_by"), panel.get("finish"))
+    placeholders = job_readiness(spec, job, base_meta.get("version")) + placeholders
+    if panel.get("needs_confirm"):
+        missing = missing + ["panel dimensions UNVERIFIED (AI/OCR-sourced — confirm in the booth file)"]
+    refusal = None
+    if approve is not None and (is_blank(approve) or looks_placeholder(approve)):
+        refusal = (f'⛔ Refusing to stamp APPROVED: approver "{approve}" is blank or a placeholder — '
+                   f"--approve needs the real client approver's name.")
+    elif approve:
+        refusal = _approval_block(res, placeholders, missing, os.path.basename(fname),
+                                  base_meta.get("ack_review"))
+    return refusal, specs, placeholders, missing
+
+
+def _approval_block(res, placeholders, missing, fname, ack_review=None):
+    """Return a refusal message if this item can't be locked-approved, else None.
+
+    Invariant 4: approval must refuse when a check fails or a measurement is
+    unconfirmed. Beyond the FAIL refusal: a size check that did not PASS is
+    ALWAYS refused (no flag overrides an unverified/wrong finished size); any
+    other NEEDS-REVIEW verdict needs an explicit --ack-review \"reason\",
+    which is recorded on the proof and in the log row."""
     if res["verdict"] == "FAIL":
         return (f"⛔ Refusing to stamp APPROVED: {fname} FAILS preflight "
                 f"({', '.join(k for k, v in res['results'].items() if v[0] == 'FAIL')}). Fix the FAIL(s) first.")
+    size_st, size_msg = res["results"].get("size", ("NA", "size was not checked"))
+    if size_st != "PASS":
+        return (f"⛔ Refusing to stamp APPROVED: the finished size is unverified or wrong — "
+                f"size check is {size_st}: {size_msg}\n   A measurement that did not PASS can "
+                f"never be approved (--ack-review does not override size); fix the file or "
+                f"verify the size first.")
     if placeholders:
         return ("⛔ Refusing to stamp APPROVED: placeholder/blank values would reach the client:\n   - "
                 + "\n   - ".join(placeholders) + "\n   Fill them in the booth spec first.")
     if missing:
         return ("⛔ Refusing to stamp APPROVED: not client-ready — " + ", ".join(missing)
                 + ".\n   Confirm these in the booth file (and provide --prepped-by / --qc-by) before approving.")
+    if res["verdict"] == "REVIEW":
+        warns = [k for k, v in res["results"].items() if v[0] == "WARN"]
+        if is_blank(ack_review) or looks_placeholder(ack_review):
+            return ("⛔ Refusing to stamp APPROVED: preflight verdict is NEEDS REVIEW — WARN on "
+                    + ", ".join(warns) + ".\n   Review those items, then re-run with "
+                    "--ack-review \"reason\" to approve with a recorded acknowledgment.")
     return None
+
+
+def _log_proof_safe(*args):
+    """(logged, ok) - ok is False only when the row could not be persisted
+    ANYWHERE (the xlsx path AND the CSV fallback both failed). Used on the
+    approval path: an approval that cannot be logged must not stamp
+    (invariant 4 adjacent - the 'stamped and logged' promise)."""
+    try:
+        return log_proof(*args), True
+    except Exception as e:
+        return f"(log write failed: {e})", False
 
 
 def _cleanup(path):

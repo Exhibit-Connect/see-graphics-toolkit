@@ -14,6 +14,8 @@ SE_Graphics_Production_Department_Roles.docx
 # Redundant bundle (GitHub offers "Download ZIP") + runtime data
 SEE_Wall_Template_Kit.zip
 proof_log.xlsx
+proof_log.xlsx.lock
+proof_log_fallback.csv
 
 # Doc render-sources (the PDFs are the deliverables; HTML kept local for edits)
 docs/*.html
@@ -22,7 +24,9 @@ docs/*.html
 *_preflight.*
 _intake_*.png
 _intake_ai_dryrun.json
-_proof_thumb.png
+_intake_ai_response.json
+_proof_thumb*.png
+_proof_mark*.png
 # demo rehearsal outputs — hold renamed copies of client (Syntron) data that dodge *Graphic_Dimensions*
 demo_scratch/
 # tool outputs generated into the repo root at runtime (canonical copies live in examples/)

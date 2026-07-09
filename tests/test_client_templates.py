@@ -133,8 +133,7 @@ def test_cover_tags_every_continuous_wall_one_piece():
         {"name": "Seamed", "w": 603.0, "h": 48.0},                             # oversized, NOT continuous
         {"name": "Plain", "w": 78.0, "h": 40.0},                               # normal single panel
     ]}
-    over = {p["name"] for p in ct.oversized_panels(spec)}
-    html = ct._cover_page(spec, spec["panels"], over, 5)
+    html = ct._cover_page(spec, spec["panels"], 5)   # P1-10: settings-driven predicate
     assert html.count("one piece") == 2      # both continuous walls, not just the oversized one
     assert "tile/seam" in html               # the oversized non-continuous piece
 
@@ -146,3 +145,124 @@ def test_continuous_banner_omits_door_clause_when_no_doors():
     html = ct.panel_page_html(spec["panels"][0], spec, 2, 2, oversized=False)
     assert "One continuous graphic" in html
     assert "Door openings are marked" not in html
+
+
+# ---------- P1-10: per-panel output safety, honest PDF failures, identity-safe oversized ----------
+import json
+import os
+import sys
+
+import pytest
+
+import render
+
+
+def test_is_oversized_predicate():
+    assert ct.is_oversized({"name": "Giant", "w": 603.0, "h": 48.0}, SETTINGS)
+    assert not ct.is_oversized({"name": "Wall", "w": 78.12, "h": 173.32}, SETTINGS)
+
+
+def test_duplicate_names_only_the_oversized_one_gets_seam_notice():
+    # two panels named "Counter": only the genuinely oversized OBJECT is
+    # tile/seam - the old name-keyed set misclassified both
+    spec = {"settings": SETTINGS, "panels": [
+        {"name": "Counter", "w": 603.0, "h": 48.0},   # oversized
+        {"name": "Counter", "w": 40.0, "h": 40.0},    # normal
+    ]}
+    html = ct.build_templates_html(spec)
+    assert html.count("printed in sections and seamed") == 1
+    assert html.count("tile/seam") == 1               # cover tag too
+
+
+def _write_spec(tmp_path, panels):
+    spec = {"job": {"name": "T"}, "settings": SETTINGS, "panels": panels}
+    p = tmp_path / "booth_spec_t.json"
+    p.write_text(json.dumps(spec))
+    return str(p)
+
+
+def test_per_panel_stem_collision_gets_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sp = _write_spec(tmp_path, [{"name": "Wall-1", "w": 10, "h": 20},
+                                {"name": "Wall 1", "w": 30, "h": 40}])
+    rendered = []
+
+    def fake_pdf(hp, pp):
+        rendered.append(os.path.basename(pp))
+        open(pp, "w", encoding="utf-8").write("pdf")
+        return True
+
+    monkeypatch.setattr(ct.render, "html_to_pdf", fake_pdf)
+    monkeypatch.setattr(sys, "argv", ["client_templates.py", sp, "--per-panel"])
+    ct.main()
+    per_panel = [r for r in rendered if r.endswith("_template.pdf")]
+    assert len(per_panel) == len(set(per_panel)) == 2    # distinct outputs
+    assert any("_2_template.pdf" in r for r in per_panel)  # index disambiguates
+
+
+def test_per_panel_failed_render_keeps_html_and_names_panel(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    sp = _write_spec(tmp_path, [{"name": "Good", "w": 10, "h": 20},
+                                {"name": "Bad", "w": 30, "h": 40}])
+
+    def fake_pdf(hp, pp):
+        if "Bad" in hp:
+            return False
+        open(pp, "w", encoding="utf-8").write("pdf")
+        return True
+
+    monkeypatch.setattr(ct.render, "html_to_pdf", fake_pdf)
+    # Chrome "absent": the failure is the legitimate fallback -> exit 0
+    monkeypatch.setenv("SEE_CHROME", str(tmp_path / "no_chrome"))
+    monkeypatch.setattr(sys, "argv", ["client_templates.py", sp, "--per-panel"])
+    ct.main()                                            # no SystemExit
+    out = capsys.readouterr().out
+    assert "per-panel FAILED (HTML kept for manual print): Bad" in out
+    assert "per-panel PDFs: 1 of 2" in out
+    kept = [f for f in os.listdir(tmp_path) if f.endswith("_template.html")]
+    assert kept == ["t_Bad_template.html"]               # failed panel's HTML kept
+
+
+def test_render_failure_with_chrome_present_exits_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    sp = _write_spec(tmp_path, [{"name": "A", "w": 10, "h": 20}])
+    monkeypatch.setattr(ct.render, "html_to_pdf", lambda *a, **k: False)
+    monkeypatch.setenv("SEE_CHROME", sys.executable)           # "Chrome" exists
+    monkeypatch.setattr(sys, "argv", ["client_templates.py", sp])
+    with pytest.raises(SystemExit) as ei:
+        ct.main()
+    assert ei.value.code == 1
+    assert "PDF render FAILED" in capsys.readouterr().out
+
+
+def test_chrome_absent_fallback_still_exit_0(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    sp = _write_spec(tmp_path, [{"name": "A", "w": 10, "h": 20}])
+    monkeypatch.setattr(ct.render, "html_to_pdf", lambda *a, **k: False)
+    monkeypatch.setenv("SEE_CHROME", str(tmp_path / "no_chrome"))
+    monkeypatch.setattr(sys, "argv", ["client_templates.py", sp])
+    ct.main()                                            # no SystemExit
+    assert "PDF step skipped (Chrome not installed)" in capsys.readouterr().out
+
+
+# ---------- P3-6: exact scale percentage + seam-notice wording ----------
+def test_scale_pct_exact_percentage():
+    # 0.75 scale prints at 133.33%, not a rounded '@133%' a vendor would take literally
+    assert ct.scale_pct(0.75) == "built at ¾ scale (print @133.33%)"
+    assert ct.scale_pct(0.5) == "built at ½ scale (print @200%)"   # integral stays whole
+    assert ct.scale_pct(0.4) == "built at 0.4× scale (print @250%)"
+
+
+def test_seam_notice_formats_dims_and_names_the_caption_row():
+    spec = {"settings": SETTINGS, "panels": [{"name": "Seamed", "w": 603.0, "h": 48.0}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 1, 1, oversized=True)
+    assert '(603" × 48")' in html                 # :g — no trailing '.0'
+    assert "File size WITH bleed" in html         # names the exact caption row
+    assert "shown at right" in html
+
+
+def test_seam_notice_omits_parenthetical_when_dims_missing():
+    spec = {"settings": SETTINGS, "panels": [{"name": "S"}]}
+    html = ct.panel_page_html(spec["panels"][0], spec, 1, 1, oversized=True)
+    assert "too large for one template." in html  # no '(None" × None")'
+    assert "None" not in html

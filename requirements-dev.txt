@@ -1,5 +1,6 @@
 # Dev / test dependencies. Install with:  pip install -r requirements-dev.txt
-# The tested helpers in tools/intake.py and tools/proofer.py are pure-Python
-# (the pypdf/Pillow/openpyxl imports live inside the untested I/O functions),
-# so the test suite needs only pytest.
-pytest
+# Pulls in the pinned runtime deps too: the suite exercises the real pypdf /
+# Pillow / openpyxl code paths (PDF-analysis fixtures, proof-log round-trips),
+# so pytest alone is no longer enough.
+-r requirements.txt
+pytest==9.*

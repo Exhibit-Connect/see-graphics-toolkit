@@ -7,8 +7,9 @@ missed - regardless of which 3D designer or software produced it.
 
 Handles both handoff styles:
   * PDF export (the placement / dimensions package)
-  * native files that are PDF-compatible (.ai, .eps)
-  (a true non-PDF native -> export a PDF first; message shown.)
+  * native files that carry PDF-compatible content (.ai, and .eps saved with a
+    PDF stream). A PostScript-only .eps/.ai cannot be parsed - the tool says so
+    and asks for a PDF export instead of dumping a traceback.
 
 Two passes:
   1. DETERMINISTIC (always, offline): pulls panel names + sizes from the
@@ -28,11 +29,18 @@ each flagged needs_confirm, with a size only where one is actually printed.
 
 Usage:
     python3 intake.py <handoff.pdf|.ai|.eps> [--job "Name"] [--ai] [--out file.json]
+        [--max-pages N] [--force]
+
+All pages are rendered/OCR'd by default (--max-pages caps it, and the skip is
+disclosed). Any page Ghostscript/tesseract could not process is reported in the
+printed summary, the review's "Tool warnings" section and _intake.warnings -
+never silently dropped. Re-running refuses to overwrite an existing draft or
+review (a designer may have hand-confirmed them) unless --force, or --out for
+an explicitly named draft.
 """
-import json, sys, os, re, subprocess, tempfile, shutil
+import argparse, json, sys, os, re, subprocess, tempfile, shutil
 
 PDF_EXT = (".pdf", ".ai", ".eps")
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 SETTINGS = {"scale": 0.5, "bleed_per_side_in": 1.0, "safe_margin_in": 4.0,
             "color_mode": "CMYK / Pantone", "resolution_ppi": {"min": 120, "max": 150},
@@ -43,11 +51,13 @@ DOOR_STD = {"panel_w_in": 39.125, "panel_h_in": 95.21, "edge_offset_in": 4.3125,
             "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
             "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79}}
 
-# "Name: 78.12" x 173.32""  (overview list) - the most reliable source
+# "Name: 78.12" x 173.32""  (overview list) - the most reliable source.
+# Captures the optional unit letter on BOTH numbers ('96"h x 48"w' is
+# height-first - discarding the letters used to transpose those dims).
 PANEL_RE = re.compile(
     r'^[ \t]*([A-Za-z][A-Za-z0-9 ._/&-]*?)[ \t]*:[ \t]*'
-    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*[wWhHdD]?[ \t]*[xX][ \t]*'
-    r'([0-9]+(?:\.[0-9]+)?)', re.M)
+    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*([wWhHdD])?[ \t]*[xX][ \t]*'
+    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*([wWhHdD])?', re.M)
 # "Full Scale Trim: 78.12in w x 173.32in h" (per-wall confirmation)
 FULLSCALE_RE = re.compile(r'Full Scale Trim:?\s*([0-9.]+)\s*in\s*w\s*x\s*([0-9.]+)\s*in\s*h', re.I)
 # bare "39.06" x 134.26"" dims (e.g. the fridge-fabric note)
@@ -88,21 +98,34 @@ def read_pdf_text(path):
 
 
 def parse_panels(text):
+    """Panels from overview lines ('Name: W x H'). Returns (panels, conflicts).
+    Conflict entries are (name, (w,h), (w,h)) tuples for two-sizes disagreements
+    or plain strings for parsing notes (e.g. contradictory unit labels). Panels
+    are deduped on norm_name so 'Wall A'/'WALL A' is ONE panel (first-seen
+    display name kept); a repeat at a different size is a conflict, not a
+    second panel. '96\"h x 48\"w' honors the unit letters (w=48, h=96)."""
     found, order, conflicts = {}, [], []
     for m in PANEL_RE.finditer(text):
         name = re.sub(r"\s+", " ", m.group(1)).strip()
         if name.lower() in BLOCK or len(name) > 32:
             continue
-        w, h = float(m.group(2)), float(m.group(3))
+        w, h = float(m.group(2)), float(m.group(4))
+        u1, u2 = (m.group(3) or "").lower(), (m.group(5) or "").lower()
+        if u1 == "h" and u2 == "w":
+            w, h = h, w
+        elif u1 and u1 == u2 and u1 in ("w", "h"):
+            conflicts.append(f"{name}: contradictory unit labels (both marked '{u1}') — "
+                             f"kept {w} x {h} as written; confirm which is width")
         if not (1 <= w <= 600 and 1 <= h <= 600):
             continue
-        if name in found:
-            if found[name] != (w, h):
-                conflicts.append((name, found[name], (w, h)))
+        key = norm_name(name)
+        if key in found:
+            if found[key][1] != (w, h):
+                conflicts.append((found[key][0], found[key][1], (w, h)))
             continue
-        found[name] = (w, h)
-        order.append(name)
-    return [{"name": n, "w": found[n][0], "h": found[n][1]} for n in order], conflicts
+        found[key] = (name, (w, h))
+        order.append(key)
+    return [{"name": found[k][0], "w": found[k][1][0], "h": found[k][1][1]} for k in order], conflicts
 
 
 # "Graphic Key" table rows: `C 107.325"w x 153.8125"h`, `H1-H2 39.0625"w x 153.8125"h`.
@@ -113,24 +136,55 @@ KEY_RE = re.compile(
     r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”]?[ \t]*[hH]', re.M)
 
 
+def _expand_range_label(label):
+    """Expand a graphic-key range label into every panel it names.
+    Returns (names, note): 'H1-H4' -> [H1,H2,H3,H4] (a split on '-' used to
+    keep only the endpoints, silently dropping H2/H3 from the draft); 'C-E' ->
+    [C,D,E]. An unexpandable mixed form keeps both endpoints and returns a
+    review note so a human checks for panels in between. Pure."""
+    if "-" not in label:
+        return [label.strip()], None
+    a, b = (p.strip() for p in re.split(r"\s*-\s*", label, maxsplit=1))
+    ma, mb = re.match(r"^([A-Za-z]*)(\d+)$", a), re.match(r"^([A-Za-z]*)(\d+)$", b)
+    if ma and mb and mb.group(1) in (ma.group(1), ""):     # H1-H4 or H1-4
+        lo, hi = int(ma.group(2)), int(mb.group(2))
+        if lo <= hi <= lo + 100:
+            pad = len(ma.group(2)) if ma.group(2).startswith("0") else 0
+            return [f"{ma.group(1)}{str(i).zfill(pad)}" for i in range(lo, hi + 1)], None
+    if len(a) == 1 and len(b) == 1 and a.isalpha() and b.isalpha() and ord(a) <= ord(b):
+        return [chr(i) for i in range(ord(a), ord(b) + 1)], None   # C-E -> C,D,E
+    return [a, b], (f"range '{label}' could not be fully expanded — kept only the endpoints "
+                    f"{a} and {b}; check the key for panels between them")
+
+
 def parse_graphic_key(text):
     """Parse a 'Graphic Key' table (label + W\"w x H\"h) — how real handoffs print
     per-graphic sizes on the floor plan, recovered via OCR. Expands ranges like
-    'H1-H2' or 'C-D' into individual panels sharing that size. Returns
-    [{name,w,h}, ...] in order, deduped. Deterministic + pure (same text in -> same
-    panels out), which is the whole point: no run-to-run variance."""
-    found, order = {}, []
+    'H1-H4' or 'C-E' into the FULL run of panels sharing that size. Returns
+    (panels, conflicts) — same shapes as parse_panels: panels deduped on
+    norm_name in order; a repeated label at a different size is a conflict
+    tuple, an unexpandable range a conflict note string. Deterministic + pure
+    (same text in -> same panels out), which is the whole point: no run-to-run
+    variance."""
+    found, order, conflicts = {}, [], []
     for m in KEY_RE.finditer(text):
         w, h = float(m.group(2)), float(m.group(3))
         if not (1 <= w <= 600 and 1 <= h <= 600):
             continue
-        label = m.group(1)
-        parts = [p.strip() for p in re.split(r"\s*-\s*", label)] if "-" in label else [label.strip()]
-        for name in parts:
-            if name and name not in found:
-                found[name] = (w, h)
-                order.append(name)
-    return [{"name": n, "w": found[n][0], "h": found[n][1]} for n in order]
+        names, note = _expand_range_label(m.group(1))
+        if note:
+            conflicts.append(note)
+        for name in names:
+            if not name:
+                continue
+            key = norm_name(name)
+            if key in found:
+                if found[key][1] != (w, h):
+                    conflicts.append((found[key][0], found[key][1], (w, h)))
+                continue
+            found[key] = (name, (w, h))
+            order.append(key)
+    return [{"name": found[k][0], "w": found[k][1][0], "h": found[k][1][1]} for k in order], conflicts
 
 
 # Render DPIs. High enough that fine printed dimension labels (e.g. 39.0625") are
@@ -140,48 +194,103 @@ def parse_graphic_key(text):
 AI_RENDER_DPI = 150
 OCR_RENDER_DPI = 300
 
-
-def render_pages(path, n_pages, max_pages=5):
-    """Rasterize the first pages to PNG for the AI pass (Ghostscript), at
-    AI_RENDER_DPI so the model can read small dimension labels, not just shapes."""
-    out = []
-    for p in range(1, min(n_pages, max_pages) + 1):
-        png = os.path.abspath(f"_intake_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{AI_RENDER_DPI}",
-                        f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
-                       capture_output=True)
-        if os.path.exists(png):
-            out.append(png)
-    return out
-
-
+GS = shutil.which("gs")                # Ghostscript - rasterizes pages for the AI/OCR passes
 TESSERACT = shutil.which("tesseract")  # deterministic OCR engine, if installed
 
 
-def ocr_pages(path, n_pages, max_pages=8):
-    """Render pages to high-res PNG and OCR them with tesseract (DETERMINISTIC) - the
-    fallback when a handoff has no extractable text (a visual deck). Returns the
-    concatenated OCR text, or '' if tesseract isn't available. Same image -> same text
-    every run, so panels recovered from this don't vary run-to-run (unlike the AI)."""
-    if not TESSERACT:
-        return ""
+def _stderr_tail(proc, n=200):
+    """Last chars of a subprocess result's stderr, decoded safely ('' if none)."""
+    s = getattr(proc, "stderr", None) or b""
+    if isinstance(s, bytes):
+        s = s.decode("utf-8", "replace")
+    s = s.strip()
+    return s[-n:]
+
+
+def _page_cap(n_pages, max_pages, what):
+    """(last_page, warnings) for a page cap. Default = ALL pages (a capped read
+    used to silently drop pages 6+/9+ - a missed wall). When a cap applies, the
+    skip is stated honestly so it lands in the review + spec warnings."""
+    if max_pages is None or max_pages >= n_pages:
+        return n_pages, []
+    return max_pages, [f"{what}: read {max_pages} of {n_pages} pages (--max-pages {max_pages}); "
+                       f"skipped pages {max_pages + 1}-{n_pages}"]
+
+
+def render_pages(path, n_pages, max_pages=None, run=None):
+    """Rasterize pages to PNG for the AI pass (Ghostscript), at AI_RENDER_DPI so
+    the model can read small dimension labels, not just shapes.
+
+    Returns (image_paths, warnings). Every page goes to a UNIQUE path inside a
+    per-run temp dir (a fixed cwd name let a stale or concurrent job's page be
+    sent to the AI), and a page counts only when gs exited 0 AND created the
+    file. Failed pages are recorded in `warnings` (page number + stderr tail) -
+    never silently dropped. `run` is injectable for tests."""
+    run = run or subprocess.run
+    if not GS:
+        return [], ["Ghostscript not installed — AI/OCR page rendering skipped "
+                    "(no pages could be rasterized)"]
+    last, warnings = _page_cap(n_pages, max_pages, "AI page render")
+    tmpdir = tempfile.mkdtemp(prefix="_intake_render_")
     out = []
-    for p in range(1, min(n_pages, max_pages) + 1):
-        png = os.path.abspath(f"_intake_ocr_p{p}.png")
-        subprocess.run(["gs", "-q", "-sDEVICE=png16m", f"-r{OCR_RENDER_DPI}",
-                        f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path], capture_output=True)
-        if not os.path.exists(png):
+    for p in range(1, last + 1):
+        png = os.path.join(tmpdir, f"p{p}.png")
+        r = run([GS, "-q", "-sDEVICE=png16m", f"-r{AI_RENDER_DPI}",
+                 f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
+                capture_output=True)
+        if r.returncode != 0 or not os.path.exists(png):
+            tail = _stderr_tail(r)
+            warnings.append(f"page {p}: Ghostscript render failed (rc {r.returncode})"
+                            + (f": {tail}" if tail else ""))
             continue
-        try:
-            r = subprocess.run([TESSERACT, png, "stdout"], capture_output=True, text=True)
-            out.append(r.stdout or "")
-        except Exception:
-            pass
-        try:
-            os.remove(png)
-        except OSError:
-            pass
-    return "\n".join(out)
+        out.append(png)
+    if not out:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return out, warnings
+
+
+def ocr_pages(path, n_pages, max_pages=None, run=None):
+    """Render pages to high-res PNG and OCR them with tesseract (DETERMINISTIC) - the
+    fallback when a handoff has no extractable text (a visual deck). Returns
+    (concatenated_text, warnings). Same image -> same text every run, so panels
+    recovered from this don't vary run-to-run (unlike the AI). Page PNGs live in a
+    per-run temp dir (removed in a finally); a failed gs or tesseract page is
+    recorded in `warnings` instead of silently vanishing ('no wall is missed').
+    `run` is injectable for tests."""
+    run = run or subprocess.run
+    if not TESSERACT:
+        return "", ["tesseract not installed — OCR of the visual handoff skipped"]
+    if not GS:
+        return "", ["Ghostscript not installed — AI/OCR page rendering skipped "
+                    "(no pages could be rasterized)"]
+    last, warnings = _page_cap(n_pages, max_pages, "OCR")
+    tmpdir = tempfile.mkdtemp(prefix="_intake_ocr_")
+    out = []
+    try:
+        for p in range(1, last + 1):
+            png = os.path.join(tmpdir, f"ocr_p{p}.png")
+            r = run([GS, "-q", "-sDEVICE=png16m", f"-r{OCR_RENDER_DPI}",
+                     f"-dFirstPage={p}", f"-dLastPage={p}", "-o", png, path],
+                    capture_output=True)
+            if r.returncode != 0 or not os.path.exists(png):
+                tail = _stderr_tail(r)
+                warnings.append(f"page {p}: Ghostscript render failed (rc {r.returncode})"
+                                + (f": {tail}" if tail else ""))
+                continue
+            try:
+                t = run([TESSERACT, png, "stdout"], capture_output=True, text=True)
+            except OSError as e:
+                warnings.append(f"page {p}: tesseract failed: {e}")
+                continue
+            if t.returncode != 0:
+                tail = _stderr_tail(t)
+                warnings.append(f"page {p}: tesseract failed (rc {t.returncode})"
+                                + (f": {tail}" if tail else ""))
+                continue
+            out.append(t.stdout or "")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return "\n".join(out), warnings
 
 
 # Standard SEE material vocabulary (mirrors finish_options in the example booth spec).
@@ -213,27 +322,74 @@ AI_PROMPT = (
 )
 
 
-def ai_enrich(path, n_pages, det_panels):
+# The model's full response body (gitignored — inspect/debug only; the draft
+# spec persists just a summary of it, see ai_persist_summary).
+AI_RESPONSE_FILE = "_intake_ai_response.json"
+
+
+def ai_enrich(path, n_pages, det_panels, max_pages=None):
     import ai_client
-    imgs = render_pages(path, n_pages)
-    prompt = AI_PROMPT.replace("__DET__", json.dumps(det_panels))
-    if not ai_client.available():
-        payload = ai_client._redacted_payload(prompt, imgs)
-        open("_intake_ai_dryrun.json", "w").write(json.dumps(payload, indent=2))
-        return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
-                "_images": imgs, "_model": ai_client.MODEL}
+    imgs, warnings = render_pages(path, n_pages, max_pages)
+    tmpdirs = {os.path.dirname(p) for p in imgs}
     try:
-        data = ai_client.ask_json(prompt, imgs)
-        data["_status"] = "live"; data["_model"] = ai_client.MODEL
-        return data
-    except Exception as e:
-        return {"_status": "error", "_error": str(e)}
+        prompt = AI_PROMPT.replace("__DET__", json.dumps(det_panels))
+        if not ai_client.available():
+            # json_mode=True mirrors the live ask_json call below - the dry-run
+            # is documented as "the exact request", so it must carry response_format
+            payload = ai_client._redacted_payload(prompt, imgs, json_mode=True)
+            with open("_intake_ai_dryrun.json", "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, indent=2))
+            return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
+                    "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
+        if not ai_client.upload_allowed():
+            # P3-5 NDA gate: a key is configured but this job's imagery must not
+            # leave the machine — write the request locally, exactly like dry-run.
+            payload = ai_client._redacted_payload(prompt, imgs, json_mode=True)
+            with open("_intake_ai_dryrun.json", "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, indent=2))
+            return {"_status": "blocked",
+                    "_note": f"{ai_client.UPLOAD_ENV} blocks uploading this job's page images "
+                             f"to OpenRouter (NDA gating); wrote _intake_ai_dryrun.json instead",
+                    "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
+        try:
+            # P3-5 transparency notice: say exactly what is leaving the machine
+            print(f"Uploading {len(imgs)} page image(s) of {os.path.basename(path)} "
+                  f"to OpenRouter ({ai_client.MODEL})")
+            data = ai_client.ask_json(prompt, imgs)
+            # the full response goes to a gitignored file, not into the draft spec
+            with open(AI_RESPONSE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            data["_status"] = "live"; data["_model"] = ai_client.MODEL; data["_warnings"] = warnings
+            return data
+        except Exception as e:
+            return {"_status": "error", "_error": str(e), "_warnings": warnings}
     finally:
+        # the finally covers the dry-run return too - no page PNG survives the run
         for p in imgs:
             try:
                 os.remove(p)
             except OSError:
                 pass
+        for d in tmpdirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def ai_persist_summary(ai):
+    """What the draft spec persists about the AI pass (P3-5): status / model /
+    note / error, the advisory missing_or_unsure list, and a proposed-panel
+    count — never the full response (the seeded panels already live in
+    spec['panels']; the full body is in the gitignored AI_RESPONSE_FILE).
+    Pure; None passes through (AI pass not run)."""
+    if not isinstance(ai, dict):
+        return ai
+    keep = {k: ai[k] for k in ("_status", "_model", "_note", "_error", "_pages_rendered")
+            if k in ai}
+    if ai.get("missing_or_unsure"):
+        keep["missing_or_unsure"] = ai["missing_or_unsure"]
+    if ai.get("_status") == "live":
+        keep["panels_proposed"] = len(ai.get("panels", []) or [])
+        keep["full_response"] = AI_RESPONSE_FILE + " (gitignored)"
+    return keep
 
 
 def ai_field_guesses(ai, panels, field):
@@ -311,8 +467,50 @@ def ai_seed_panels(ai):
     return seeded, undim
 
 
-def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_source="text", undimensioned=None):
+def seed_panels(src, n_pages, text_panels, ai, max_pages=None, ocr_text_fn=None):
+    """The panel-seeding cascade (extracted from main(), P2-9, logic unchanged).
+
+    The text pass is the reliable floor. If it found NOTHING (a visual / non-text
+    handoff), prefer DETERMINISTIC OCR of the graphic key — same image -> same
+    panels every run — and fall back to the AI vision pass only if OCR recovers
+    nothing. OCR/AI panels are never trusted blindly: each is needs_confirm +
+    _source, and AI surfaces with no printed size are listed (never invented).
+
+    `ocr_text_fn` (defaults to ocr_pages; injectable for tests) must return
+    (text, warnings). Returns (spec_panels, panel_source, undimensioned,
+    conflicts, warnings) — panel_source is 'text', 'ocr' or 'ai-vision'."""
+    ocr_text_fn = ocr_text_fn or ocr_pages
+    panel_source, undimensioned = "text", []
+    conflicts, warnings = [], []
+    spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single")
+                   for p in text_panels]
+    if not text_panels:
+        ocr_panels, ocr_conflicts = [], []
+        ocr_text, ocr_warnings = ocr_text_fn(src, n_pages, max_pages)
+        warnings += ocr_warnings
+        if ocr_text:
+            ocr_panels, ocr_conflicts = parse_graphic_key(ocr_text)
+            if not ocr_panels:
+                ocr_panels, ocr_conflicts = parse_panels(ocr_text)
+        if ocr_panels:
+            # keep what the producing parser flagged + cross-check the OCR text's
+            # per-wall pages, exactly like the text pass (conflicts were discarded here)
+            conflicts += ocr_conflicts + reconcile(ocr_panels, ocr_text)
+            spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single",
+                                needs_confirm=True, _source="OCR of graphic key (CONFIRM label + size)")
+                           for p in ocr_panels]
+            panel_source = "ocr"
+        else:
+            seeded, undimensioned = ai_seed_panels(ai)
+            if seeded:
+                spec_panels, panel_source = seeded, "ai-vision"
+    return spec_panels, panel_source, undimensioned, conflicts, warnings
+
+
+def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_source="text", undimensioned=None,
+                 warnings=None):
     undimensioned = undimensioned or []
+    warnings = warnings or []
     if panel_source == "ai-vision":
         head = f"## Panels — seeded from the AI VISION pass ({len(panels)}) — CONFIRM each, incl. every dimension"
     elif panel_source == "ocr":
@@ -358,18 +556,30 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
     for t in todo:
         lines.append(f"- [ ] {t}")
     if conflicts:
-        lines += ["", "### ⚠ Dimension conflicts (same panel, two sizes)"]
-        for n, a, b in conflicts:
-            lines.append(f"- **{n}**: {a[0]}x{a[1]} vs {b[0]}x{b[1]} — pick one")
+        lines += ["", "### ⚠ Dimension conflicts (same panel, two sizes) / parsing notes"]
+        for c in conflicts:
+            if isinstance(c, str):
+                lines.append(f"- {c}")
+            else:
+                n, a, b = c
+                lines.append(f"- **{n}**: {a[0]}x{a[1]} vs {b[0]}x{b[1]} — pick one")
     if extras:
         lines += ["", "### Notes pulled from the package"]
         for e in extras:
             lines.append(f"- {e}")
+    if warnings:
+        lines += ["", "### Tool warnings",
+                  "_Pages the render/OCR tools could NOT process — the draft may be missing "
+                  "panels from these pages; check them by hand._", ""]
+        for w in warnings:
+            lines.append(f"- ⚠ {w}")
     lines += ["", "## AI enrichment pass"]
     if ai is None:
         lines.append("- not run (use `--ai`).")
     elif ai.get("_status") == "dry-run":
         lines.append(f"- **dry-run** (no API key). Model `{ai.get('_model')}`. Request written to `_intake_ai_dryrun.json` — set `OPENROUTER_API_KEY` and re-run with `--ai` to execute.")
+    elif ai.get("_status") == "blocked":
+        lines.append(f"- **blocked** — {ai.get('_note')}")
     elif ai.get("_status") == "live":
         lines.append(f"- **ran live** with `{ai.get('_model')}`. Proposed {len(ai.get('panels', []))} surface(s); "
                      f"missing/unsure: {', '.join(ai.get('missing_or_unsure', []) or ['none'])}.")
@@ -382,31 +592,53 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
     return "\n".join(lines) + "\n"
 
 
-def main():
-    args = sys.argv[1:]
-    use_ai = "--ai" in args
-    args = [a for a in args if a != "--ai"]
-    job, out = None, None
-    files = []
-    i = 0
-    while i < len(args):
-        if args[i] == "--job":
-            job = args[i + 1]; i += 2
-        elif args[i] == "--out":
-            out = args[i + 1]; i += 2
-        else:
-            files.append(args[i]); i += 1
-    if not files:
-        print("usage: python3 intake.py <handoff.pdf|.ai|.eps> [--job \"Name\"] [--ai] [--out file.json]")
-        return
-    src = files[0]
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="intake.py",
+        description="Turn a 3D handoff (PDF / PDF-compatible .ai/.eps) into a draft "
+                    "booth-spec JSON + a review checklist a human signs off.")
+    ap.add_argument("handoff", help="handoff file (.pdf, .ai or .eps)")
+    ap.add_argument("--job", help="job name (default: derived from the file name)")
+    ap.add_argument("--out", help="draft spec output path (default: booth_spec_<job>_DRAFT.json)")
+    ap.add_argument("--ai", action="store_true", help="run the AI enrichment pass (OpenRouter)")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite an existing draft spec / review file")
+    ap.add_argument("--max-pages", type=int, default=None,
+                    help="cap AI/OCR page rendering (default: ALL pages; any skip is disclosed)")
+    a = ap.parse_args(argv)
+    use_ai, job, out, max_pages = a.ai, a.job, a.out, a.max_pages
+
+    src = a.handoff
     ext = os.path.splitext(src)[1].lower()
     if ext not in PDF_EXT:
         print(f"'{ext}' is not PDF-compatible. Export a PDF from the 3D/design tool and re-run on that.\n"
-              f"(PDF, .ai and .eps work directly.)")
-        return
+              f"(PDF, and .ai/.eps saved with PDF content, work directly.)")
+        sys.exit(2)
 
-    text, pages, n = read_pdf_text(src)
+    # Refuse to clobber a draft/review a designer may have hand-confirmed.
+    job_name = job or "Untitled job (from " + os.path.basename(src) + ")"
+    base = re.sub(r"[^A-Za-z0-9]+", "_", job_name).strip("_")
+    out = out or f"booth_spec_{base}_DRAFT.json"
+    review = f"{base}_intake_review.md"
+    if os.path.exists(out) and not (a.out or a.force):
+        print(f"{out} exists (it may carry hand-confirmed edits) — pass --out for a new "
+              f"path or --force to overwrite.")
+        sys.exit(1)
+    if os.path.exists(review) and not a.force:
+        print(f"{review} exists (it may carry hand-confirmed sign-offs) — pass --force to overwrite.")
+        sys.exit(1)
+
+    try:
+        text, pages, n = read_pdf_text(src)
+    except Exception as e:                      # pypdf.errors.PdfReadError + anything else
+        if ext in (".eps", ".ai"):
+            print(f"Could not parse '{os.path.basename(src)}' as a PDF ({type(e).__name__}: {e}).\n"
+                  f"This {ext} appears to be PostScript-only — export a PDF from the 3D/design "
+                  f"tool and re-run on that.")
+        else:
+            print(f"Could not read '{os.path.basename(src)}' as a PDF ({type(e).__name__}: {e}).\n"
+                  f"Export a fresh PDF from the 3D/design tool and re-run on that.")
+        sys.exit(2)
     panels, conflicts = parse_panels(text)
     conflicts += reconcile(panels, text)   # overview vs per-wall pages
 
@@ -423,34 +655,19 @@ def main():
     if re.search(r"\bdoor\b", text, re.I):
         extras.append("Door referenced — confirm which wall and side.")
 
-    job = job or "Untitled job (from " + os.path.basename(src) + ")"
-    ai = ai_enrich(src, n, panels) if use_ai else None
+    job = job_name
+    warnings = []
+    ai = ai_enrich(src, n, panels, max_pages) if use_ai else None
+    if isinstance(ai, dict):
+        warnings += ai.get("_warnings", [])
 
-    # The text pass is the reliable floor. If it found NOTHING (a visual / non-text
-    # handoff), seed the draft from the AI vision result so the handoff still yields a
-    # usable, flagged draft instead of an empty one. AI panels are never trusted blindly:
-    # each is needs_confirm, and surfaces with no printed size are listed (never invented).
-    panel_source, undimensioned = "text", []
-    spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single") for p in panels]
-    if not panels:
-        # Visual handoff (no extractable text). Prefer DETERMINISTIC OCR of the graphic
-        # key — same image -> same panels every run — and fall back to the AI vision pass
-        # only if OCR recovers nothing. Either way the panels stay needs_confirm.
-        ocr_panels = []
-        ocr_text = ocr_pages(src, n)
-        if ocr_text:
-            ocr_panels = parse_graphic_key(ocr_text) or parse_panels(ocr_text)[0]
-        if ocr_panels:
-            spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single",
-                                needs_confirm=True, _source="OCR of graphic key (CONFIRM label + size)")
-                           for p in ocr_panels]
-            panel_source = "ocr"
-        else:
-            seeded, undimensioned = ai_seed_panels(ai)
-            if seeded:
-                spec_panels, panel_source = seeded, "ai-vision"
+    spec_panels, panel_source, undimensioned, seed_conflicts, seed_warnings = seed_panels(
+        src, n, panels, ai, max_pages)
+    conflicts += seed_conflicts
+    warnings += seed_warnings
 
-    pending = ["finish/substrate per panel", "double-sided structures",
+    pending = ["job number (TBD — set it so proofs join the dashboard by number)",
+               "finish/substrate per panel", "double-sided structures",
                "door wall + side", "TV/shelf/fixture zones (size + position)", "due date"]
     if undimensioned:
         pending.insert(0, "DIMENSIONS for AI-seen surfaces with no printed size (measure/confirm — do NOT guess): "
@@ -459,22 +676,22 @@ def main():
     spec = {
         "_about": "DRAFT booth spec produced by intake.py from a 3D handoff. CONFIRM before production. "
                   "Feeds SEE_Wall_Template_Generator.jsx, generate_spec_packet.py and proofer.py.",
-        "job": {"name": job, "due_date": "TBD"},
+        "job": {"name": job, "job_number": "TBD", "due_date": "TBD"},
         "settings": SETTINGS, "door_standard": DOOR_STD,
         "panels": spec_panels,
         "pending_inputs": pending,
         "_intake": {"source": os.path.basename(src), "pages": n, "panel_source": panel_source,
                     "panels_found_text": len(panels), "panels_in_draft": len(spec_panels),
                     "ai_undimensioned": undimensioned, "fullscale_confirms": len(fullscale),
-                    "conflicts": [{"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
-                    "notes": extras, "ai": ai},
+                    "conflicts": [{"note": c} if isinstance(c, str) else
+                                  {"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
+                    "notes": extras, "warnings": warnings, "ai": ai_persist_summary(ai)},
     }
-    base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_")
-    out = out or f"booth_spec_{base}_DRAFT.json"
-    json.dump(spec, open(out, "w"), indent=2)
-    review = f"{base}_intake_review.md"
-    open(review, "w").write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
-                                          panel_source, undimensioned))
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(spec, f, indent=2)
+    with open(review, "w", encoding="utf-8") as f:
+        f.write(build_review(job, src, spec_panels, conflicts, fullscale, extras, ai,
+                             panel_source, undimensioned, warnings))
 
     print(f"Read {n} pages of {os.path.basename(src)}")
     if panel_source == "ocr":
@@ -488,7 +705,10 @@ def main():
     else:
         print(f"Panels found (text pass): {len(panels)}  ->  " + ", ".join(p['name'] for p in panels))
     if conflicts:
-        print(f"  ⚠ {len(conflicts)} dimension conflict(s): " + "; ".join(f"{c[0]} {c[1]}!={c[2]}" for c in conflicts))
+        print(f"  ⚠ {len(conflicts)} dimension conflict(s)/note(s): "
+              + "; ".join(c if isinstance(c, str) else f"{c[0]} {c[1]}!={c[2]}" for c in conflicts))
+    for w in warnings:
+        print(f"  ⚠ tool warning: {w}")
     if ai:
         print(f"  AI pass: {ai.get('_status')}" + (f" ({ai.get('_note')})" if ai.get('_note') else ""))
     print(f"Draft spec : {out}")

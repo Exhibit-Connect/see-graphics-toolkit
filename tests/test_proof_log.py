@@ -1,0 +1,292 @@
+"""P1-4: proof log integrity — flock-guarded writes, CSV fallback, one fixed
+location ($SEE_PROOF_LOG, else repo root), log-after-render for non-approve
+proofs. Rows written by make_proof.log_proof are round-tripped through
+dashboard.read_proof_log. No gs/Chrome/network needed (openpyxl only).
+"""
+import csv
+import datetime
+import fcntl
+import os
+import threading
+import time
+
+import pytest
+
+import dashboard
+import make_proof as mp
+
+
+def _log_row(panel="F1", verdict="PASS", approver=None, status="PROOFED (PASS)"):
+    return mp.log_proof("Booth Build", "1001", panel, "F1.pdf", verdict, status,
+                        "C1", "A. Tech", "M. Palumbo", approver)
+
+
+def _canned_res():
+    return {"panel": {"name": "F1", "w": 78, "h": 134, "finish": "Fabric"},
+            "how": "named explicitly", "info": {"kind": "pdf"},
+            "results": {"size": ("PASS", "ok"), "color": ("PASS", "CMYK")},
+            "verdict": "PASS", "fixes": []}
+
+
+CLEAN_SPEC = {"job": {"name": "Booth Build", "client": "Acme Co", "show": "NAB",
+                      "job_number": "1001", "version": "C1"},
+              "settings": {},
+              "panels": [{"name": "F1", "w": 78, "h": 134, "finish": "Fabric"}]}
+META = {"prepped_by": "A. Tech", "qc_by": "M. Palumbo", "version": "C1",
+        "fulfillment": "delivery", "ack_review": None}
+
+
+# ---------- location ----------
+def test_default_location_is_repo_root_env_var_overrides(monkeypatch):
+    monkeypatch.delenv("SEE_PROOF_LOG", raising=False)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(mp.__file__)))
+    assert mp.default_log_path() == os.path.join(repo_root, "proof_log.xlsx")
+    monkeypatch.setenv("SEE_PROOF_LOG", "/shared/drive/mylog.xlsx")
+    assert mp.default_log_path() == "/shared/drive/mylog.xlsx"
+
+
+# ---------- round trip ----------
+def test_rows_round_trip_into_dashboard(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    assert _log_row(panel="F1") == str(log)
+    _log_row(panel="F2", verdict="REVIEW", approver="Jane Client")
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert [r["Panel / Item"] for r in rows] == ["F1", "F2"]     # file order kept
+    assert rows[0]["Date"] == datetime.date.today().isoformat()
+    assert rows[1]["Approved by"] == "Jane Client"
+    import openpyxl
+    header = [c.value for c in next(openpyxl.load_workbook(str(log)).active.iter_rows())]
+    assert header == mp.LOG_HEADER                               # shared contract
+
+
+# ---------- locking ----------
+def test_interleaved_writes_block_on_the_lock_and_both_persist(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    holder = open(str(log) + ".lock", "w", encoding="utf-8")
+    fcntl.flock(holder, fcntl.LOCK_EX)                  # simulate a concurrent run
+    done = []
+    t = threading.Thread(target=lambda: done.append(_log_row(panel="F1")))
+    t.start()
+    time.sleep(0.25)
+    assert not done and not log.exists()                # blocked, not dropped
+    fcntl.flock(holder, fcntl.LOCK_UN)
+    holder.close()
+    t.join(timeout=10)
+    assert done == [str(log)]
+    _log_row(panel="F2")
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert [r["Panel / Item"] for r in rows] == ["F1", "F2"]   # nobody's row lost
+
+
+# ---------- CSV fallback ----------
+def test_openpyxl_missing_row_lands_in_csv_and_note_names_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+    monkeypatch.setattr(mp, "openpyxl", None)
+    logged = _log_row(approver="Jane Client")
+    assert "proof_log_fallback.csv" in logged and "openpyxl missing" in logged
+    rows = list(csv.reader(open(tmp_path / "proof_log_fallback.csv", encoding="utf-8", newline="")))
+    assert rows[0] == mp.LOG_HEADER
+    assert rows[1][mp.LOG_HEADER.index("Panel / Item")] == "F1"
+    assert rows[1][mp.LOG_HEADER.index("Approved by")] == "Jane Client"
+
+
+class _LockedOpenpyxl:
+    """Stands in for openpyxl whose workbook is locked/corrupt on load & save."""
+    @staticmethod
+    def load_workbook(*a, **k):
+        raise OSError("xlsx is locked by Excel")
+
+    @staticmethod
+    def Workbook(*a, **k):
+        raise OSError("xlsx is locked by Excel")
+
+
+def test_workbook_save_failure_falls_back_to_csv_no_traceback(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+    monkeypatch.setattr(mp, "openpyxl", _LockedOpenpyxl)
+    logged = _log_row()
+    assert "proof_log_fallback.csv" in logged and "locked by Excel" in logged
+    assert (tmp_path / "proof_log_fallback.csv").exists()
+
+
+def test_approval_with_locked_xlsx_stamps_via_csv_and_still_renders(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+    monkeypatch.setattr(mp, "openpyxl", _LockedOpenpyxl)
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: _canned_res())
+    rendered = []
+    monkeypatch.setattr(mp.proofer, "render_pdf",
+                        lambda hp, pp: (rendered.append(hp), False)[1])
+    mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
+                          "Jane Client", dict(META), None)      # no SystemExit
+    assert rendered, "render must still happen after the fallback log"
+    assert os.path.exists("F1_PROOF_vC1_APPROVED.html")   # P1-7: version in the name
+    csv_text = open("proof_log_fallback.csv", encoding="utf-8").read()
+    assert "Jane Client" in csv_text
+
+
+# ---------- log-after-render (non-approve) ----------
+def test_non_approve_logs_after_render_and_records_the_outcome(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: _canned_res())
+    order = []
+    monkeypatch.setattr(mp.proofer, "render_pdf",
+                        lambda hp, pp: (order.append("render"), False)[1])
+    real_log = mp.log_proof
+    monkeypatch.setattr(mp, "log_proof",
+                        lambda *a: (order.append("log"), real_log(*a))[1])
+    mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
+                          None, dict(META), None)
+    assert order == ["render", "log"]                   # the log can't claim a
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]   # proof that wasn't made
+    assert "PDF render failed (HTML only)" in rows[-1]["Status"]
+
+
+# ---------- dashboard discovery / merging ----------
+def test_find_logs_env_var_and_jobs_dir_merge(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sub = tmp_path / "jobs" / "jobA"
+    sub.mkdir(parents=True)
+    monkeypatch.setenv("SEE_PROOF_LOG", str(sub / "proof_log.xlsx"))
+    _log_row()                                          # a log written inside a job folder
+    # env now points elsewhere (nothing there): only the jobs-dir glob can find it
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "elsewhere.xlsx"))
+    paths = dashboard.find_logs(jobs_dir=str(tmp_path / "jobs"))
+    assert [os.path.realpath(p) for p in paths] == [os.path.realpath(str(sub / "proof_log.xlsx"))]
+    merged = {}
+    for p in paths:
+        for k, v in dashboard.read_proof_log(p)[0].items():
+            merged.setdefault(k, []).extend(v)
+    assert [r["Panel / Item"] for r in merged["1001"]] == ["F1"]
+
+
+def test_find_logs_explicit_log_flag_wins(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    log = tmp_path / "custom.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    _log_row()
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "other.xlsx"))
+    assert dashboard.find_logs(explicit=str(log)) == [str(log)]
+    assert dashboard.find_logs(explicit=str(tmp_path / "missing.xlsx")) == []
+
+
+# ---------- shared header contract + stage round-trip (P2-5) ----------
+def test_header_constant_is_shared_between_modules():
+    assert dashboard.LOG_HEADER is mp.LOG_HEADER
+    # every column the dashboard's readers rely on must survive a header edit
+    # in make_proof - renaming one there fails here, renaming a literal in
+    # dashboard fails the round-trip tests below
+    for col in ("Date", "Job", "Job #", "Panel / Item", "File", "Verdict",
+                "Status", "Approved by"):
+        assert col in mp.LOG_HEADER, f"dashboard reads {col!r}"
+
+
+def test_logged_approval_rows_drive_job_stage_approved(tmp_path, monkeypatch):
+    # a REAL logged approval (not a hand-built row dict) must read back as
+    # stage 'Approved' - the full write -> read -> stage contract
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    _log_row(panel="F1", verdict="PASS", approver="Jane Client", status="APPROVED")
+    _log_row(panel="F2", verdict="PASS", approver="Jane Client", status="APPROVED")
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    spec = {"job": {"name": "Booth Build", "job_number": "1001"},
+            "panels": [{"name": "F1"}, {"name": "F2"}]}
+    assert dashboard.latest_verdict(rows) == "PASS"
+    assert dashboard.job_stage(spec, rows) == "Approved"
+
+
+def test_logged_partial_approval_round_trips_as_partial(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    _log_row(panel="F1", verdict="PASS", approver="Jane Client", status="APPROVED")
+    _log_row(panel="F2", verdict="REVIEW")                 # not approved
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    spec = {"job": {"name": "Booth Build", "job_number": "1001"},
+            "panels": [{"name": "F1"}, {"name": "F2"}]}
+    assert dashboard.job_stage(spec, rows) == "Approved (1/2 items)"
+
+
+def test_flock_unsupported_filesystem_writes_promptly_without_lock(tmp_path, monkeypatch):
+    # P1-4 corner: on a mount where flock is unsupported, every attempt raises
+    # ENOTSUP — that is NOT contention, so the write must proceed unlocked
+    # immediately instead of stalling the 10s timeout and refusing the approval.
+    import errno as _errno
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+
+    def notsup_flock(fd, op):
+        if op & fcntl.LOCK_UN:
+            return                                    # never reached unlocked anyway
+        raise OSError(_errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(mp.fcntl, "flock", notsup_flock)
+    t0 = time.monotonic()
+    assert _log_row(approver="Jane Client") == str(log)
+    assert time.monotonic() - t0 < 2.0                # no 10s contention stall
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert rows[0]["Approved by"] == "Jane Client"    # the row really persisted
+
+
+def test_flock_contention_errnos_still_retry_and_time_out(tmp_path, monkeypatch):
+    # EWOULDBLOCK stays a retry-then-TimeoutError (the unsupported-fs fallback
+    # must not swallow real contention)
+    import errno as _errno
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+
+    def busy_flock(fd, op):
+        if op & fcntl.LOCK_UN:
+            return
+        raise OSError(_errno.EWOULDBLOCK, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(mp.fcntl, "flock", busy_flock)
+    with pytest.raises(TimeoutError):
+        with mp._FileLock(str(log), timeout=0.2):
+            pass
+
+
+# ---------- P1-4: the approve row records a post-log render failure ----------
+def _run_single(monkeypatch, approve="Jane Client", render_ok=False):
+    monkeypatch.setattr(mp.proofer, "run_checks", lambda *a, **k: _canned_res())
+    monkeypatch.setattr(mp.proofer, "render_pdf", lambda *a, **k: render_ok)
+    return mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
+                                 approve, dict(META), None)
+
+
+def test_approve_render_failure_annotates_the_logged_row(tmp_path, monkeypatch, capsys):
+    # the approve path logs BEFORE rendering; if the PDF render then fails the
+    # SAME row must say so (same wording as the non-approve path)
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    monkeypatch.chdir(tmp_path)
+    assert _run_single(monkeypatch) == 0
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert len(rows) == 1                                # updated in place, no dup
+    assert rows[0]["Status"] == "APPROVED — PDF render failed (HTML only)"
+    assert "Status annotated" in capsys.readouterr().out
+
+
+def test_approve_render_success_row_stays_plain(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    monkeypatch.chdir(tmp_path)
+    assert _run_single(monkeypatch, render_ok=True) == 0
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    assert [r["Status"] for r in rows] == ["APPROVED"]
+
+
+def test_approve_render_failure_with_csv_fallback_appends_follow_up_row(tmp_path, monkeypatch):
+    # when the approval landed in the CSV fallback (no openpyxl) the xlsx row
+    # can't be annotated in place — a follow-up row records the outcome instead
+    monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "proof_log.xlsx"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mp, "openpyxl", None)
+    assert _run_single(monkeypatch) == 0
+    rows = list(csv.reader(open(tmp_path / "proof_log_fallback.csv",
+                                encoding="utf-8", newline="")))
+    statuses = [r[mp.LOG_HEADER.index("Status")] for r in rows[1:]]
+    assert statuses == ["APPROVED", "APPROVED — PDF render failed (HTML only)"]

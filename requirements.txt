@@ -1,0 +1,10 @@
+# Runtime dependencies for the SEE graphics toolkit (P2-1).
+#
+# These were imported lazily and declared NOWHERE - a bare machine got
+# tracebacks (or silently degraded checks: unpinned pypdf/Pillow upgrades can
+# shift analyze_pdf behavior behind its guarded excepts). Pinned EXACTLY to
+# the versions the test suite is validated against; bump deliberately, with a
+# full `pytest` run (tests/test_deps.py guards the majors).
+pypdf==6.14.2       # PDF preflight analysis (proofer), error-page detection (render)
+Pillow==12.3.0      # raster analysis (proofer), intake page handling, fixtures
+openpyxl==3.1.5     # proof_log.xlsx read/write (make_proof, dashboard)

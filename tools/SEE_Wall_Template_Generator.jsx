@@ -17,7 +17,8 @@
    1. Open Adobe Illustrator (no document needs to be open).
    2. File > Scripts > Other Script...  and pick this file.
    3. When asked, choose the booth's  *.json  spec file.
-      (Cancel = use the built-in example, Mama's Creations.)
+      (Cancel = build a small built-in DEMO booth — demo data only,
+      never use it for production.)
    4. A new CMYK document is created with one artboard per panel.
 
    For a NEW job: copy the example JSON, edit its values, and load it.
@@ -27,84 +28,98 @@
 // ===================== JSON LOADER (do not edit) =====================
 function parseJSONsafe(text) {
   text = String(text);
-  if (typeof JSON !== "undefined" && JSON.parse) { return JSON.parse(text); }
+  // Strip a UTF-8 BOM and surrounding whitespace first - a BOM'd spec file is
+  // valid JSON to a human but would fail the Crockford validation regex below.
+  text = text.replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+  if (typeof JSON !== "undefined" && JSON.parse) {
+    try { return JSON.parse(text); }
+    catch (e) { throw new Error("Booth spec is not valid JSON: " + e); }
+  }
   // Crockford safe-eval fallback for older ExtendScript engines
   if (/^[\],:{}\s]*$/.test(
         text.replace(/\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4})/g, "@")
             .replace(/"[^"\\\n\r]*"|true|false|null|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g, "]")
             .replace(/(?:^|:|,)(?:\s*\[)+/g, ""))) {
-    return eval("(" + text + ")");
+    try { return eval("(" + text + ")"); }
+    catch (e2) { throw new Error("Booth spec is not valid JSON: " + e2); }
   }
-  throw new Error("Booth spec is not valid JSON.");
+  throw new Error("Booth spec is not valid JSON (failed safe-eval validation).");
 }
 
-// Built-in EXAMPLE booth (used only if you cancel the file picker).
-// For real jobs, load the booth's JSON instead of editing this.
+// Built-in DEMO booth (used only if you cancel the file picker).
+// This is SYNTHETIC data — not a real booth, not the shipped example job.
+// It exists so a designer can see what the generator produces (a plain wall
+// and a door wall with a keep-clear zone) without hunting for a file. For
+// real jobs, ALWAYS load the booth's JSON. A full worked example lives at
+// examples/1_booth_spec_example.json (kept in one place so it can't drift
+// from a copy embedded here).
 var DEFAULT_SPEC = {
-  job: { name: "Mama's Creations - IDDBA 2026 - 20x20 (built-in example)" },
+  job: { name: "built-in demo — not a real booth" },
   settings: { scale: 0.5, bleed_per_side_in: 1.0, safe_margin_in: 4.0 },
-  door_standard: {
-    panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
-    handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
-    lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
-  },
   panels: [
-    { name: "A", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", door: "left", note: "Closet wall - has the DOOR (handle on the left)" },
-    { name: "B", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "C", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "D", w: 78.12, h: 173.32, finish: "TBD", sided: "single", interior_finish: "TBD", note: "Closet wall" },
-    { name: "E1", w: 117.18, h: 114.7, finish: "TBD", sided: "single", note: "Curved glass display sits at the bottom - keep art clear of it",
-      zones: [ { x: 7.7775, y: 0, w: 101.625, h: 52.5, label: "CURVED GLASS DISPLAY / refrigerated storage - KEEP CLEAR (101.625 x 52.5)", kind: "keepclear" } ] },
-    { name: "E2", w: 117.18, h: 114.7, finish: "TBD", sided: "single" },
-    { name: "E_Soffit", w: 117.18, h: 9.76, finish: "TBD", sided: "single", note: "Soffit wrap strip" },
-    { name: "F1", w: 78.12, h: 134.26, finish: "TBD", sided: "single", note: "FRONT: artwork shows in the TOP strip only; fridge fills the rest",
-      zones: [ { x: 0, y: 95.20, w: 78.12, h: 39.06, label: "LIVE GRAPHIC AREA (78.12 x 39.06)", kind: "live" },
-               { x: 0, y: 0,     w: 78.12, h: 95.20, label: "FRIDGE DISPLAY AREA - NO artwork", kind: "keepclear" } ] },
-    { name: "F2", w: 41.31, h: 134.26, finish: "TBD", sided: "single" },
-    { name: "F3", w: 78.12, h: 134.26, finish: "TBD", sided: "single", note: "BACK panel - full height. Shelves may be placed here (sizes TBD)." },
-    { name: "F4", w: 41.31, h: 134.26, finish: "TBD", sided: "single", note: "Shelves may be placed here (sizes TBD)." },
-    { name: "Counter_1", w: 58.5, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "Counter_2", w: 58.5, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "LCounter_Front", w: 100.0, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "LCounter_Side", w: 59.0, h: 37.5, finish: "TBD", sided: "single" },
-    { name: "Fridge_Fabric_A", w: 39.06, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" },
-    { name: "Fridge_Fabric_B", w: 39.06, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" },
-    { name: "Fridge_Fabric_C", w: 78.12, h: 134.26, finish: "white fabric", sided: "single", note: "Interior white fabric" }
+    { name: "Demo_Wall", w: 96, h: 96, finish: "demo", sided: "single",
+      note: "DEMO PANEL - not a real booth",
+      zones: [ { x: 12, y: 12, w: 36, h: 24, label: "DEMO KEEP-CLEAR (36 x 24)", kind: "keepclear" } ] },
+    { name: "Demo_Door_Wall", w: 78, h: 96, finish: "demo", sided: "single", door: "left",
+      note: "DEMO PANEL - shows the standard door (handle on the left)" }
   ]
 };
 
+// Returns the parsed spec, DEFAULT_SPEC ONLY on an explicit Cancel, or null on
+// ANY failure (missing file, unreadable file, bad JSON). A failure must ABORT
+// the run - falling back to the example here used to build 18 plausible
+// artboards for the WRONG booth, which is far worse than building nothing.
 function loadSpec() {
+  var f = null;
   try {
     // A preset SEE_SPEC_PATH lets the script run head-less (no dialog) for
     // automation/testing; when it's undefined the normal file picker shows.
-    var f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
-              ? new File(SEE_SPEC_PATH)
-              : File.openDialog("Select the booth spec JSON  (Cancel = use built-in example)");
-    if (f) {
-      f.encoding = "UTF-8";
-      f.open("r");
-      var txt = f.read();
-      f.close();
-      var spec = parseJSONsafe(txt);
-      spec.__source = decodeURI(f.name);
-      return spec;
-    }
-  } catch (e) {
-    alert("Could not read that JSON - using the built-in example instead.\r\r" + e);
+    f = (typeof SEE_SPEC_PATH !== "undefined" && SEE_SPEC_PATH)
+          ? new File(SEE_SPEC_PATH)
+          : File.openDialog("Select the booth spec JSON  (Cancel = built-in DEMO, not for production)");
+  } catch (ePick) {
+    alert("Could not open a booth spec:\r" + ePick + "\r\rNothing was built.");
+    return null;
   }
-  DEFAULT_SPEC.__source = "built-in example (Mama's Creations)";
-  return DEFAULT_SPEC;
+  if (f == null) {
+    // Explicit Cancel is the ONLY path to the built-in demo.
+    alert("No booth spec chosen — building the 2-panel BUILT-IN DEMO.\r" +
+          "Demo data only — pick the real booth JSON for production.");
+    DEFAULT_SPEC.__source = "built-in demo — not a real booth";
+    return DEFAULT_SPEC;
+  }
+  try {
+    if (!f.exists) {
+      alert("Booth spec not found:\r" + f.fsName + "\r\rNothing was built.");
+      return null;
+    }
+    f.encoding = "UTF-8";
+    if (!f.open("r")) {
+      alert("Could not open the booth spec for reading:\r" + f.fsName +
+            "\r(" + f.error + ")\r\rNothing was built.");
+      return null;
+    }
+    var txt = f.read();
+    f.close();
+    var spec = parseJSONsafe(txt);
+    spec.__source = decodeURI(f.name);
+    return spec;
+  } catch (e) {
+    alert("Could not read that booth spec:\r" + f.fsName + "\r\r" + e +
+          "\r\rNothing was built. (The built-in demo is used only when you press Cancel.)");
+    return null;
+  }
 }
 
 // --------------------------- SETTINGS (from spec) -------------------
-var SPEC          = loadSpec();
-var JOB_NAME      = (SPEC.job && SPEC.job.name) ? SPEC.job.name : "Untitled job";
-var ST            = SPEC.settings || {};
+var SPEC          = loadSpec();   // null = abort (loadSpec already alerted why)
+var JOB_NAME      = (SPEC && SPEC.job && SPEC.job.name) ? SPEC.job.name : "Untitled job";
+var ST            = (SPEC && SPEC.settings) || {};
 var SCALE         = (ST.scale != null) ? ST.scale : 0.5;
 var BLEED_PER_SIDE = (ST.bleed_per_side_in != null) ? ST.bleed_per_side_in : 1.0;
 var SAFE_MARGIN   = (ST.safe_margin_in != null) ? ST.safe_margin_in : 4.0;
-var PANELS        = SPEC.panels || [];
-var DOOR          = SPEC.door_standard || {
+var PANELS        = (SPEC && SPEC.panels) || [];
+var DOOR          = (SPEC && SPEC.door_standard) || {
   panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
   handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
   lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
@@ -112,9 +127,23 @@ var DOOR          = SPEC.door_standard || {
 
 // =====================================================================
 var PT       = 72;                 // points per inch
-var GAP_IN   = 6;                  // spacing between artboards (inches, scaled)
+var GAP_IN   = 0.5;                // spacing between artboards (inches, scaled)
 var MAX_AB_PT = 226 * 72;          // Illustrator's max artboard side is ~227.5"; guard just under it
-var MAX_ROW_W_PT = 200 * PT;       // wrap to a new row before hitting Illustrator's canvas limit
+// Canvas budget (P0-15): Illustrator's WHOLE canvas is 16383 pt (~227.5")
+// square and artboards.add throws for any rect outside it — so it is the
+// CUMULATIVE footprint (every row, every column band, plus gaps) that must
+// stay inside 227.5" on both axes, not just each artboard. The math for the
+// reference booth (examples/1_booth_spec_example.json — 18 panels, scale 0.5,
+// 1" bleed/side): a 92" row cap with 0.5" scaled gaps (= 0.25" on canvas at
+// 50% scale) packs it into three column bands of 80.4" + 62.0" + 81.8" wide
+// (+ two 0.25" band gaps) = 224.6" wide x 191.5" tall — inside the canvas
+// with ~3" to spare on the wide axis. The old constants (200" rows, 6" scaled
+// gaps) piled up a ~386.7"-wide footprint and made artboards.add throw for
+// ~10 of the 18 panels. tests/test_jsx_drift.py re-runs this exact band
+// algorithm in Python against the example spec and fails if these constants
+// (or the algorithm) stop fitting the 16383-pt square.
+var MAX_ROW_W_PT = 92 * PT;        // wrap to a new row past this cumulative row width
+var MAX_COL_H_PT = 220 * PT;       // stack rows only this tall, then start a new column band
 
 function inToPt(v)   { return v * PT; }
 function sPt(v)      { return inToPt(v * SCALE); }    // scaled inches -> points
@@ -124,7 +153,7 @@ function cmyk(c, m, y, k) {
   col.cyan = c; col.magenta = m; col.yellow = y; col.black = k;
   return col;
 }
-var C_BLEED = cmyk(70, 0, 0, 0);    // cyan   - bleed
+var C_BLEED = cmyk(100, 0, 0, 0);   // cyan   - bleed (process cyan, matches the previews' #00AEEF)
 var C_TRIM  = cmyk(0, 0, 0, 100);   // black  - trim (finished size)
 var C_SAFE  = cmyk(0, 100, 0, 0);   // magenta- visual safe area
 var C_KEEP  = cmyk(0, 55, 100, 0);  // orange - keep-clear (fixture / TV / shelf / fridge)
@@ -179,16 +208,56 @@ function drawDoor(layer, labelLayer, side, panel, trimLeftXpt, trimBottomYpt) {
   smallText(labelLayer, dLeft + sPt(2), dTop - sPt(2), "DOOR (" + side + ") - cut + handle/lock holes", 18, C_DOOR);
 }
 
-// Keep-clear / live-area rectangles marked on the panel.
-function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
+// Keep-clear / live-area rectangles marked on the panel. `mirrored` (Side B of
+// a double-sided panel, seen from the back) flips each zone's x to w - x - zw.
+// Interior zones (fridge/shelf keep-clears) are mirrored onto Side B by DEFAULT:
+// over-marking a keep-clear beats printing art over hardware. Follow-up noted:
+// a per-zone `sides` field could let a zone opt out of one side.
+function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt, mirrored) {
   if (!panel.zones) return;
   for (var z = 0; z < panel.zones.length; z++) {
     var zn  = panel.zones[z];
     var col = (zn.kind === "live") ? C_LIVE : C_KEEP;
-    var zLeft = trimLeftXpt + sPt(zn.x);
+    var znXin = mirrored ? (panel.w - zn.x - zn.w) : zn.x;
+    var zLeft = trimLeftXpt + sPt(znXin);
     var zTop  = trimBottomYpt + sPt(zn.y) + sPt(zn.h);
     strokeRect(zoneLayer, zTop, zLeft, sPt(zn.w), sPt(zn.h), col, 2, true);
     if (zn.label) smallText(labelLayer, zLeft + sPt(1.5), zTop - sPt(1.5), zn.label, 18, col);
+  }
+}
+
+// Multiple marked door openings along ONE long graphic (e.g. a conference-room
+// run): each door_marks entry is {x, w, label[, side]} in trim inches from the
+// panel's left, drawn at full trim height. `side` (optional) adds the handle/
+// lock holes at DOOR.edge_offset_in from that latch edge; without it only the
+// opening is marked ("leave it one graphic, mark where the doors are").
+// Geometry mirrors preview_templates.py's door_marks loop term-for-term so the
+// production template can never disagree with the client template. `mirrored`
+// (Side B) flips each opening's x to w - x - dmw and swaps the latch side.
+function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt, mirrored) {
+  if (!panel.door_marks) return;
+  var hTrimPt = sPt(panel.h);
+  for (var d = 0; d < panel.door_marks.length; d++) {
+    var dm = panel.door_marks[d];
+    var dmWin  = (dm.w != null) ? dm.w : DOOR.panel_w_in;
+    var dmXin  = (dm.x != null) ? dm.x : 0;
+    var dmSide = dm.side;
+    if (mirrored) {
+      dmXin = panel.w - dmXin - dmWin;
+      if (dmSide === "left") dmSide = "right";
+      else if (dmSide === "right") dmSide = "left";
+    }
+    var dmLeft = trimLeftXpt + sPt(dmXin);
+    var dmW    = sPt(dmWin);
+    var dmTop  = trimBottomYpt + hTrimPt;
+    strokeRect(doorLayer, dmTop, dmLeft, dmW, hTrimPt, C_DOOR, 2, true);
+    smallText(labelLayer, dmLeft + sPt(1.5), dmTop - sPt(1.5), dm.label || "DOOR", 18, C_DOOR);
+    if (dmSide === "left" || dmSide === "right") {
+      var cx = (dmSide === "right") ? (dmLeft + dmW - sPt(DOOR.edge_offset_in))
+                                    : (dmLeft + sPt(DOOR.edge_offset_in));
+      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in));
+      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));
+    }
   }
 }
 
@@ -234,7 +303,10 @@ function addLabel(layer, xPt, yPt, panel, displayName, maxWidthPt, maxHeightPt) 
 }
 
 // --------------------------- BUILD ----------------------------------
-if (!PANELS || PANELS.length === 0) { alert("No panels found in the booth spec. Check the JSON's 'panels' list."); }
+if (!SPEC) {
+  // Bad/unreadable spec: loadSpec already alerted the real error. Build NOTHING
+  // rather than templates for the wrong booth.
+} else if (!PANELS || PANELS.length === 0) { alert("No panels found in the booth spec. Check the JSON's 'panels' list."); }
 else {
   var doc = app.documents.add(DocumentColorSpace.CMYK, 1000, 1000);
   try { doc.rulerUnits = RulerUnits.Inches; } catch (e) {}
@@ -248,11 +320,14 @@ else {
   var lArt    = getLayer(doc, "ARTWORK - place art here");
 
   var gapPt = sPt(GAP_IN);
+  var xBase = 0;        // left edge of the current column band
+  var bandW = 0;        // widest row seen in the current band
   var xCursor = 0;
   var yTop = 0;
   var rowMaxH = 0;
   var built = 0;
   var oversized = [];   // panels too large for a single Illustrator artboard at this scale
+  var failed = [];      // artboards Illustrator refused to create (layout/canvas errors)
 
   for (var i = 0; i < PANELS.length; i++) {
     var p = PANELS[i];
@@ -263,6 +338,9 @@ else {
     for (var sIdx = 0; sIdx < sides.length; sIdx++) {
       var sideName = sides[sIdx];
       var displayName = p.name + (sideName ? " - " + sideName : "");
+      // Side B is the same physical wall seen from the BACK: door hand, zone x
+      // positions, and door_marks all mirror left<->right (x -> w - x - zw).
+      var mirrored = (sIdx === 1);
 
       var wTrimPt = sPt(p.w);
       var hTrimPt = sPt(p.h);
@@ -272,19 +350,40 @@ else {
       var abHpt = hTrimPt + 2 * bleedPt;
 
       // Skip panels too big for one Illustrator artboard (e.g. a 603" hanging
-      // sign — even at half-scale it's ~302", past the ~227" limit). Flag it to
-      // tile/seam separately instead of crashing the whole run.
+      // sign — even at half-scale it's ~302", past the ~227" limit). A panel
+      // flagged oversize_mode:"continuous" is printed as ONE piece by the
+      // vendor (doors marked on the client template); everything else is
+      // flagged to tile/seam separately. Either way, don't crash the run.
       if (abWpt > MAX_AB_PT || abHpt > MAX_AB_PT) {
-        oversized.push(displayName + "  (" + p.w + '" x ' + p.h + '" = ' +
-                       Math.round(abWpt / PT) + '" x ' + Math.round(abHpt / PT) +
-                       '" at ' + (SCALE * 100) + "% — past Illustrator's ~227\" artboard limit; tile/seam separately)");
+        var ovDims = "  (" + p.w + '" x ' + p.h + '" = ' +
+                     Math.round(abWpt / PT) + '" x ' + Math.round(abHpt / PT) +
+                     '" at ' + (SCALE * 100) + "% — past Illustrator's ~227\" artboard limit; ";
+        if (p.oversize_mode === "continuous") {
+          oversized.push(displayName + ovDims +
+                         "printed as ONE continuous piece — build at full size outside Illustrator; " +
+                         "door openings marked on the client template)");
+        } else {
+          oversized.push(displayName + ovDims + "tile/seam separately)");
+        }
         continue;
       }
 
-      // wrap to next row if this artboard would overflow the canvas width
-      if (xCursor > 0 && (xCursor + abWpt) > MAX_ROW_W_PT) {
-        xCursor = 0;
+      // wrap to next row if this artboard would overflow the row width cap
+      if (xCursor > xBase && (xCursor - xBase + abWpt) > MAX_ROW_W_PT) {
+        xCursor = xBase;
         yTop = yTop - (rowMaxH + gapPt);
+        rowMaxH = 0;
+      }
+      // start a new column BAND (back to the top, shifted right past the widest
+      // row so far) when this row would run past Illustrator's ~227.5" canvas
+      // height - the old single-column layout made artboards.add throw for the
+      // later rows of a large booth and misfiled those normal-size panels as
+      // "too large - tile/seam separately".
+      if (yTop < 0 && (-yTop + abHpt) > MAX_COL_H_PT) {
+        xBase = xBase + bandW + gapPt;
+        bandW = 0;
+        xCursor = xBase;
+        yTop = 0;
         rowMaxH = 0;
       }
 
@@ -301,7 +400,15 @@ else {
           ab.name = displayName;
         }
       } catch (eAdd) {
-        oversized.push(displayName + "  (artboard could not be created: " + eAdd + ")");
+        // A layout/canvas failure is NOT an oversized panel - report it in its
+        // own list so a normal wall is never told to "tile/seam separately".
+        failed.push(displayName + "  (" + eAdd + ")");
+        // Still advance the layout cursor past the failed slot: leaving it in
+        // place would hand the SAME (bad) rect to the next panel and cascade
+        // one canvas failure into every panel after it.
+        xCursor += abWpt + gapPt;
+        if ((xCursor - gapPt - xBase) > bandW) bandW = xCursor - gapPt - xBase;
+        if (abHpt > rowMaxH) rowMaxH = abHpt;
         continue;
       }
 
@@ -313,7 +420,8 @@ else {
       var safeW = wTrimPt - 2 * safePt;
       var safeH = hTrimPt - 2 * safePt;
       if (safeW > 0 && safeH > 0) {
-        strokeRect(lSafe, abTop - bleedPt - safePt, abLeft + bleedPt + safePt, safeW, safeH, C_SAFE, 1.5);
+        // dashed, matching the Python previews/client templates (key consistency)
+        strokeRect(lSafe, abTop - bleedPt - safePt, abLeft + bleedPt + safePt, safeW, safeH, C_SAFE, 1.5, true);
       }
 
       // Trim bottom-left corner (used by zones + door)
@@ -321,18 +429,23 @@ else {
       var trimBottomYpt = abTop - bleedPt - hTrimPt;
 
       // Keep-clear / live zones (fridge, glass display, TVs, shelves, ...)
-      drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt);
+      drawZones(lZone, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored);
 
-      // Door cut + hardware (only if flagged)
+      // Door cut + hardware (only if flagged); Side B gets the mirrored hand
       if (p.door === "left" || p.door === "right") {
-        drawDoor(lDoor, lLabel, p.door, p, trimLeftXpt, trimBottomYpt);
+        var doorSide = mirrored ? ((p.door === "left") ? "right" : "left") : p.door;
+        drawDoor(lDoor, lLabel, doorSide, p, trimLeftXpt, trimBottomYpt);
       }
+
+      // Marked door openings along one long graphic (door_marks)
+      drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt, mirrored);
 
       // Label (just inside the top-left, below the bleed) — scaled to fit the panel
       addLabel(lLabel, abLeft + bleedPt + sPt(2), abTop - bleedPt - sPt(2), p, displayName,
                wTrimPt - sPt(4), abHpt - sPt(2));
 
       xCursor += abWpt + gapPt;
+      if ((xCursor - gapPt - xBase) > bandW) bandW = xCursor - gapPt - xBase;
       if (abHpt > rowMaxH) rowMaxH = abHpt;
       built++;
     }
@@ -343,7 +456,8 @@ else {
   alert("Done.\rJob: " + JOB_NAME +
         "\rSpec: " + (SPEC.__source || "built-in") +
         "\rArtboards created: " + built +
-        (oversized.length ? "\r\rSKIPPED (too large for one artboard — tile/seam separately):\r  - " + oversized.join("\r  - ") : "") +
+        (oversized.length ? "\r\rSKIPPED (too large for one artboard — see each item):\r  - " + oversized.join("\r  - ") : "") +
+        (failed.length ? "\r\rCOULD NOT CREATE (layout/canvas error — rerun or report):\r  - " + failed.join("\r  - ") : "") +
         "\rScale: " + (SCALE * 100) + "%  |  Bleed: " + BLEED_PER_SIDE + '" per side (' + (BLEED_PER_SIDE * 2) + '" total)' +
         "\r\rColors:  cyan = bleed,  black = trim,  magenta = safe area," +
         "\r  orange = keep-clear (fixture/TV/shelf),  green = live art area,  red = door." +

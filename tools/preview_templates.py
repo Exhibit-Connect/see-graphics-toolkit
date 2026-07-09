@@ -11,10 +11,13 @@ so you (or a client / leadership) can eyeball the layout without opening AI.
 Usage:
     python3 tools/preview_templates.py [booth_spec.json] [--out BASE]
 
-Outputs BASE.svg (always) and BASE.png (via macOS qlmanage when available).
+Outputs BASE.svg (always) and BASE.png (headless Chrome when available;
+falls back to macOS qlmanage, which force-fits a square canvas and may CROP
+very wide booths — a cropped result is detected and flagged).
 """
-import json, sys, os, glob, math, subprocess, tempfile, shutil, html
+import json, struct, sys, os, glob, math, subprocess, tempfile, shutil, html
 import render
+import spec_validate
 
 PXI = 2.3          # pixels per inch in the preview
 COLS = 5           # panels per row
@@ -22,13 +25,41 @@ GAP, LBL, PAD, HEADER = 26, 34, 24, 96
 C = {"bleed": "#00AEEF", "trim": "#111111", "safe": "#EC008C",
      "keep": "#F7941E", "live": "#39B54A", "door": "#ED1C24"}
 
+# SEE's standard door — the SINGLE Python source for the built-in door geometry,
+# and it MUST mirror the `SPEC.door_standard || {...}` fallback in
+# SEE_Wall_Template_Generator.jsx exactly (a drift test pins them together).
+# The production .jsx falls back to this full door when a spec has no
+# door_standard, so the previews/client templates must too — otherwise a
+# hand-authored spec yields a production template WITH the door and a client
+# template silently WITHOUT it, and the client designs over the door cut.
+DOOR_DEFAULT = {
+    "panel_w_in": 39.125, "panel_h_in": 95.21, "edge_offset_in": 4.3125,
+    "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
+    "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79},
+}
+
 
 def find_default_spec():
+    """Booth spec auto-discovery for the DEMO-friendly tools (previews, spec
+    packet): cwd first; ambiguity refuses; the examples/ fallback is kept for
+    demo use but announced LOUDLY (the client-facing tools - proofer,
+    make_proof - refuse instead: see proofer.find_default_spec)."""
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (os.getcwd(), os.path.join(here, "..", "examples"),
               os.path.join(os.getcwd(), "examples"), here):
         hits = sorted(glob.glob(os.path.join(d, "*booth_spec*.json")))
+        if len(hits) > 1:
+            print("Multiple booth specs found — pass an explicit spec path to pick one:",
+                  file=sys.stderr)
+            for h in hits:
+                print(f"  {h}", file=sys.stderr)
+            sys.exit(2)
         if hits:
+            if os.path.abspath(d) != os.path.abspath(os.getcwd()):
+                print(f"⚠  Using booth spec: {hits[0]} (DEMO fallback — this is NOT "
+                      f"your booth; pass the real spec path)", file=sys.stderr)
+            else:
+                print(f"Using booth spec: {hits[0]}")
             return hits[0]
     return "booth_spec.json"
 
@@ -58,46 +89,69 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
     for z in panel.get("zones", []):
         col = C["live"] if z.get("kind") == "live" else C["keep"]
         rx, ry = tlx + z["x"] * px, tty + (h - z["y"] - z["h"]) * px
-        o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}22" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
+        # fill-opacity, not 8-digit hex alpha ('{col}22'): the latter is invalid
+        # in strict SVG 1.1 viewers (black boxes in Illustrator import/older librsvg)
+        o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}" fill-opacity="0.13" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
         tag = "LIVE" if z.get("kind") == "live" else "keep clear"
         o.append(f'<text x="{rx+4:.1f}" y="{ry+13:.1f}" font-size="8.5" font-weight="700" fill="{col}">{esc(tag)}</text>')
+    # The .jsx production generator falls back to its built-in door when the spec
+    # has no door_standard — mirror that here (single source: DOOR_DEFAULT) so
+    # the client template can never silently omit a door the production one draws.
+    door_standard = door_standard or DOOR_DEFAULT
+
+    def _holes(cx, stroke_w):
+        frags = []
+        for key in ("handle", "lock"):
+            hole = door_standard.get(key, DOOR_DEFAULT[key])
+            if hole:
+                cy = tby - hole.get("y_from_floor_in", DOOR_DEFAULT[key]["y_from_floor_in"]) * px
+                r = hole.get("dia_in", DOOR_DEFAULT[key]["dia_in"]) / 2 * px
+                frags.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" '
+                             f'fill="none" stroke="{C["door"]}" stroke-width="{stroke_w}"/>')
+        return frags
+
     side = panel.get("door")
-    if side in ("left", "right") and door_standard:
-        dW, dH = door_standard.get("panel_w_in", 39.125) * px, door_standard.get("panel_h_in", 95.21) * px
+    if side and side not in ("left", "right"):
+        # Exact lowercase left/right is the contract (the .jsx requires it too);
+        # warn loudly instead of silently drawing no door for "Left"/"rigth"/etc.
+        print(f'WARNING: panel "{panel.get("name", "?")}": unrecognized door value "{side}" — '
+              f'expected lowercase "left" or "right"; door NOT drawn (matches the Illustrator generator)',
+              file=sys.stderr)
+    if side in ("left", "right"):
+        dW = door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"]) * px
+        dH = door_standard.get("panel_h_in", DOOR_DEFAULT["panel_h_in"]) * px
         dl = tlx if side == "left" else (tlx + tw - dW)
         dtop = tby - dH
         o.append(f'<rect x="{dl:.1f}" y="{dtop:.1f}" width="{dW:.1f}" height="{dH:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
-        off = door_standard.get("edge_offset_in", 4.3125) * px
+        off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
         cx = (dl + off) if side == "left" else (dl + dW - off)
-        for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
-            if hole:
-                cy = tby - hole.get("y_from_floor_in", 38) * px
-                o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.6"/>')
+        o.extend(_holes(cx, 1.6))
         o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
     # Multiple marked doors on one long graphic (e.g. the conference-room run): each
     # is {x, w, label[, side]} in trim inches from the left, full trim height. `side`
     # (optional) adds the handle/lock holes on that latch edge; without it we just
     # mark the opening (per production: "leave it one graphic, mark where the doors are").
     for dm in panel.get("door_marks", []):
-        dmw = dm.get("w", (door_standard or {}).get("panel_w_in", 39.125)) * px
+        dmw = dm.get("w", door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"])) * px
         dmx = tlx + dm.get("x", 0) * px
         o.append(f'<rect x="{dmx:.1f}" y="{tty:.1f}" width="{dmw:.1f}" height="{th:.1f}" '
                  f'fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
         o.append(f'<text x="{dmx+3:.1f}" y="{tty+12:.1f}" font-size="8.5" font-weight="700" '
                  f'fill="{C["door"]}">{esc(dm.get("label", "DOOR"))}</text>')
         dside = dm.get("side")
-        if dside in ("left", "right") and door_standard:
-            off = door_standard.get("edge_offset_in", 4.3125) * px
+        if dside and dside not in ("left", "right"):
+            print(f'WARNING: panel "{panel.get("name", "?")}": unrecognized door_marks side "{dside}" — '
+                  f'expected lowercase "left" or "right"; opening marked but holes NOT drawn',
+                  file=sys.stderr)
+        if dside in ("left", "right"):
+            off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
             cx = (dmx + off) if dside == "left" else (dmx + dmw - off)
-            for hole in (door_standard.get("handle", {}), door_standard.get("lock", {})):
-                if hole:
-                    cy = tby - hole.get("y_from_floor_in", 38) * px
-                    o.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{hole.get("dia_in",1)/2*px:.1f}" '
-                             f'fill="none" stroke="{C["door"]}" stroke-width="1.4"/>')
+            o.extend(_holes(cx, 1.4))
     return "\n".join(o)
 
 
 def build_svg(spec):
+    spec_validate.validate_or_raise(spec)   # fail fast, never draw a broken booth
     st = spec.get("settings", {})
     bleed = st.get("bleed_per_side_in", 1.0)
     safe = st.get("safe_margin_in", 4.0)
@@ -150,29 +204,79 @@ def build_svg(spec):
             pbw, pbh = bw(p), bh(p)
             py = y + LBL + (rh - pbh)            # bottom-align panels in the row
             o.append(f'<text x="{x0:.1f}" y="{y+18:.1f}" font-size="12.5" font-weight="700" fill="#111">{esc(p["name"])}</text>')
-            o.append(f'<text x="{x0:.1f}" y="{y+31:.1f}" font-size="10.5" fill="#666">{p["w"]}" × {p["h"]}"</text>')
+            o.append(f'<text x="{x0:.1f}" y="{y+31:.1f}" font-size="10.5" fill="#666">{esc(p["w"])}" × {esc(p["h"])}"</text>')
             o.append(panel_guides_svg(p, st, door, x0, py, PXI))
         y += LBL + rh + GAP
     o.append("</svg>")
     return "\n".join(o), len(panels)
 
 
+def png_px_size(png_path):
+    """(width, height) from a PNG's IHDR chunk, or None when the file isn't a
+    readable PNG. Pure byte-peek (no PIL needed)."""
+    try:
+        with open(png_path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    w, h = struct.unpack(">II", head[16:24])
+    return (w, h) if (w and h) else None
+
+
+def _aspect_mismatch(svg_path, png_path, tol=0.02):
+    """True when the produced PNG's aspect ratio is off the SVG's by more than
+    `tol` — the signature of qlmanage's force-fit square CROPPING a wide booth
+    (panels silently lost off the right edge)."""
+    png_wh = png_px_size(png_path)
+    if not png_wh:
+        return False  # can't tell - don't claim a crop we can't show
+    try:
+        svg_w, svg_h = render.svg_px_size_from_text(
+            open(svg_path, encoding="utf-8", errors="replace").read(4000))
+    except OSError:
+        return False
+    if not (svg_h and png_wh[1]):
+        return False
+    svg_aspect = svg_w / svg_h
+    png_aspect = png_wh[0] / png_wh[1]
+    return abs(png_aspect - svg_aspect) / svg_aspect > tol
+
+
 def render_png(svg_path, png_path, width=1600):
     """Rasterize the preview SVG to PNG. Primary path is the shared headless-Chrome
     renderer (render.svg_to_png), which sizes the canvas to the SVG's OWN aspect
-    ratio — qlmanage force-fit a square and cropped wide booths (a long back wall
-    lost panels off the right edge). Falls back to qlmanage only if Chrome is absent."""
+    ratio — qlmanage force-fits a square and has cropped wide booths (a long back
+    wall lost panels off the right edge). Falls back to qlmanage only if Chrome is
+    absent, and COMPARES the produced PNG's aspect to the SVG's so a cropped
+    result is flagged instead of silently presented as the booth.
+
+    Returns a truthy status naming the path taken — 'chrome', 'qlmanage', or
+    'qlmanage-cropped' (PNG exists but appears cropped) — or False when no PNG
+    could be produced."""
     if render.svg_to_png(svg_path, png_path):
-        return True
+        return "chrome"
     if shutil.which("qlmanage"):  # fallback (may crop very wide layouts)
         td = tempfile.mkdtemp()
-        subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path], capture_output=True)
+        p = subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path],
+                           capture_output=True)
         produced = os.path.join(td, os.path.basename(svg_path) + ".png")
-        ok = os.path.exists(produced)
+        ok = p.returncode == 0 and os.path.exists(produced)
         if ok:
             shutil.move(produced, png_path)
+        else:
+            tail = (p.stderr or b"")[-300:].decode("utf-8", "replace").strip()
+            print(f"qlmanage failed (returncode={p.returncode}){': ' + tail if tail else ''}",
+                  file=sys.stderr)
         shutil.rmtree(td, ignore_errors=True)
-        return ok
+        if not ok:
+            return False
+        if _aspect_mismatch(svg_path, png_path):
+            print("PNG made via qlmanage and appears CROPPED (its aspect ratio does not "
+                  "match the SVG's) — use the SVG for the full booth", file=sys.stderr)
+            return "qlmanage-cropped"
+        return "qlmanage"
     return False
 
 
@@ -183,23 +287,41 @@ def main():
     i = 0
     while i < len(args):
         if args[i] == "--out":
+            if i + 1 >= len(args):   # trailing '--out' used to IndexError
+                print("usage: python3 tools/preview_templates.py [booth_spec.json] [--out BASE]",
+                      file=sys.stderr)
+                sys.exit(2)
             out_base = args[i + 1]; i += 2
         else:
             files.append(args[i]); i += 1
     spec_path = files[0] if files else find_default_spec()
-    spec = json.load(open(spec_path))
+    with open(spec_path, encoding="utf-8-sig") as f:
+        spec = json.load(f)
     if not out_base:
-        out_base = "templates_preview"
+        # derive from the spec filename so two booths' previews never
+        # overwrite each other's fixed 'templates_preview.svg/png'
+        out_base = os.path.splitext(os.path.basename(spec_path))[0] + "_preview"
+    job = (spec.get("job", {}) or {}).get("name", "Booth")
+    print(f"Spec: {spec_path}  ·  job: {job}")
     svg_path = os.path.abspath(out_base + ".svg")
     png_path = os.path.abspath(out_base + ".png")
-    svg, n = build_svg(spec)
-    open(svg_path, "w").write(svg)
+    try:
+        svg, n = build_svg(spec)
+    except spec_validate.SpecError as e:
+        spec_validate.report_and_exit(e)   # one line per problem, exit 2, nothing written
+    with open(svg_path, "w", encoding="utf-8") as f:
+        f.write(svg)   # flushed/closed before Chrome reads it via file://
     print(f"panels previewed: {n}")
     print("SVG:", svg_path)
-    if render_png(svg_path, png_path):
+    status = render_png(svg_path, png_path)
+    if status == "qlmanage-cropped":
+        print(f"PNG: {png_path} (qlmanage fallback — appears CROPPED, prefer the SVG)")
+    elif status:
         print("PNG:", png_path)
     else:
-        print("PNG: (qlmanage unavailable — open the SVG, or print it to an image)")
+        # blame whoever actually failed, not just qlmanage
+        print("PNG: not produced (Chrome and qlmanage both unavailable or failed) — "
+              "open the SVG in any browser, or print it to an image")
 
 
 if __name__ == "__main__":

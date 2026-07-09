@@ -127,9 +127,22 @@ var DOOR          = (SPEC && SPEC.door_standard) || {
 
 // =====================================================================
 var PT       = 72;                 // points per inch
-var GAP_IN   = 6;                  // spacing between artboards (inches, scaled)
+var GAP_IN   = 0.5;                // spacing between artboards (inches, scaled)
 var MAX_AB_PT = 226 * 72;          // Illustrator's max artboard side is ~227.5"; guard just under it
-var MAX_ROW_W_PT = 200 * PT;       // wrap to a new row before hitting Illustrator's canvas limit
+// Canvas budget (P0-15): Illustrator's WHOLE canvas is 16383 pt (~227.5")
+// square and artboards.add throws for any rect outside it — so it is the
+// CUMULATIVE footprint (every row, every column band, plus gaps) that must
+// stay inside 227.5" on both axes, not just each artboard. The math for the
+// reference booth (examples/1_booth_spec_example.json — 18 panels, scale 0.5,
+// 1" bleed/side): a 92" row cap with 0.5" scaled gaps (= 0.25" on canvas at
+// 50% scale) packs it into three column bands of 80.4" + 62.0" + 81.8" wide
+// (+ two 0.25" band gaps) = 224.6" wide x 191.5" tall — inside the canvas
+// with ~3" to spare on the wide axis. The old constants (200" rows, 6" scaled
+// gaps) piled up a ~386.7"-wide footprint and made artboards.add throw for
+// ~10 of the 18 panels. tests/test_jsx_drift.py re-runs this exact band
+// algorithm in Python against the example spec and fails if these constants
+// (or the algorithm) stop fitting the 16383-pt square.
+var MAX_ROW_W_PT = 92 * PT;        // wrap to a new row past this cumulative row width
 var MAX_COL_H_PT = 220 * PT;       // stack rows only this tall, then start a new column band
 
 function inToPt(v)   { return v * PT; }
@@ -390,6 +403,12 @@ else {
         // A layout/canvas failure is NOT an oversized panel - report it in its
         // own list so a normal wall is never told to "tile/seam separately".
         failed.push(displayName + "  (" + eAdd + ")");
+        // Still advance the layout cursor past the failed slot: leaving it in
+        // place would hand the SAME (bad) rect to the next panel and cascade
+        // one canvas failure into every panel after it.
+        xCursor += abWpt + gapPt;
+        if ((xCursor - gapPt - xBase) > bandW) bandW = xCursor - gapPt - xBase;
+        if (abHpt > rowMaxH) rowMaxH = abHpt;
         continue;
       }
 

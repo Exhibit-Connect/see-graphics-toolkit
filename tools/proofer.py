@@ -213,13 +213,33 @@ def _do_ctms(content, base=None):
     return out
 
 
+def _eff_ppi(px, placed_pt):
+    """Effective worst-axis ppi of one placement (mirrors analyze_pdf's
+    grading, including its >1pt degenerate-CTM guard). Degenerate placements
+    grade +inf so any real placement outranks them when picking the worst."""
+    pw, ph = px
+    w_pt, h_pt = placed_pt
+    if w_pt > 1 and h_pt > 1:
+        return min(pw / (w_pt / 72.0), ph / (h_pt / 72.0))
+    if w_pt > 1:
+        return pw / (w_pt / 72.0)
+    return float("inf")
+
+
 def image_placements(content, img_names):
-    """Return {name: (placed_w_pt, placed_h_pt)} by tracking the CTM to each `/Name Do`."""
+    """Return {name: (placed_w_pt, placed_h_pt)} by tracking the CTM to each
+    `/Name Do`. An XObject placed more than once keeps its WORST placement
+    (largest area -> lowest effective ppi): the last CTM used to win, so a
+    low-res large placement of an image was invisible whenever the same image
+    was ALSO placed small (thumbnail/legend) later in the stream (P0-1/P0-3)."""
     placed = {}
     for nm, ctm in _do_ctms(content):
         if nm in img_names:
             a, b, c, d = ctm[0], ctm[1], ctm[2], ctm[3]
-            placed[nm] = (math.hypot(a, b), math.hypot(c, d))
+            cand = (math.hypot(a, b), math.hypot(c, d))
+            prev = placed.get(nm)
+            if prev is None or cand[0] * cand[1] > prev[0] * prev[1]:
+                placed[nm] = cand
     return placed
 
 
@@ -332,7 +352,16 @@ def _scan_context(res, content, base_ctm, info, images, visited, depth):
                 if sub == "/Image":
                     w = int(o["/Width"]); h = int(o["/Height"])
                     img_dims[name.lstrip("/")] = (w, h)
-                    info["colors"].add(resolve_cs(o.get("/ColorSpace")))
+                    mask = o.get("/ImageMask")
+                    if bool(getattr(mask, "value", mask)):
+                        # /ImageMask true is a stencil: it legitimately has NO
+                        # /ColorSpace and paints with the current fill color
+                        # (already graded via the rg/RG/k/K operators) - do
+                        # not misreport it as an unidentified-colorspace gap
+                        # that flips a clean CMYK file to REVIEW (P0-1).
+                        pass
+                    else:
+                        info["colors"].add(resolve_cs(o.get("/ColorSpace")))
                 elif sub == "/Form":
                     forms[name.lstrip("/")] = (o, key)
             except Exception as e:
@@ -351,7 +380,13 @@ def _scan_context(res, content, base_ctm, info, images, visited, depth):
     for nm, ctm in dos:
         if nm in img_dims:
             a, b, c, d = ctm[0], ctm[1], ctm[2], ctm[3]
-            placed[nm] = (math.hypot(a, b), math.hypot(c, d))
+            cand = (math.hypot(a, b), math.hypot(c, d))
+            prev = placed.get(nm)
+            # an XObject placed more than once is graded from its WORST
+            # (lowest effective ppi) placement - the last CTM used to win,
+            # hiding a low-res placement behind a small high-res one (P0-1/P0-3)
+            if prev is None or _eff_ppi(img_dims[nm], cand) < _eff_ppi(img_dims[nm], prev):
+                placed[nm] = cand
     for nm, (pw, ph) in img_dims.items():
         images.append({"px": (pw, ph), "placed_pt": placed.get(nm)})
     # recurse into Form XObjects (Illustrator/InDesign exports wrap most

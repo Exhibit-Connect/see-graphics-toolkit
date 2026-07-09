@@ -489,3 +489,80 @@ def test_pillow_pypdf_trimbox_exact_bleed_margin_passes(tmp_path):
     res = proofer.run_checks(p, PILLOW_SPEC, "Wall A")
     assert res["results"]["size"][0] == "PASS"
     assert res["results"]["marks"][0] == "PASS"
+
+
+# ---------- P0-1/P0-3 corner cases: repeated placements + image masks ----------
+def _repeat_placement_pdf(tmp_path, content, name="repeat.pdf"):
+    objs = catalog_and_pages() + [
+        page(FULL_BLEED_PT, "<< /XObject << /Im1 5 0 R >> >>", "4 0 R"),
+        stream("", content),
+        CMYK_IMAGE_1440,
+    ]
+    return build_pdf(tmp_path / name, objs)
+
+
+def test_image_placed_large_then_tiny_grades_the_worst_placement(tmp_path):
+    """The 1440px image placed at 1440pt (20in -> 72 ppi, FAIL) and then tiny
+    at 72pt (1in -> 1440 ppi). The last CTM used to win, so the low-res
+    placement was invisible; the WORST placement must be graded."""
+    p = _repeat_placement_pdf(tmp_path,
+                              "q 1440 0 0 1440 0 0 cm /Im1 Do Q "
+                              "q 72 0 0 72 0 0 cm /Im1 Do Q")
+    info = proofer.analyze_pdf(p)
+    assert len(info["images"]) == 1
+    assert info["images"][0]["ppi"] == 72
+    st, msg = proofer.check_resolution(info, SPEC)
+    assert st == "FAIL" and "72" in msg
+
+
+def test_image_placed_tiny_then_large_grades_the_same_worst_placement(tmp_path):
+    # order-independent: the worst placement wins either way
+    p = _repeat_placement_pdf(tmp_path,
+                              "q 72 0 0 72 0 0 cm /Im1 Do Q "
+                              "q 1440 0 0 1440 0 0 cm /Im1 Do Q",
+                              name="repeat2.pdf")
+    info = proofer.analyze_pdf(p)
+    assert info["images"][0]["ppi"] == 72
+    assert proofer.check_resolution(info, SPEC)[0] == "FAIL"
+
+
+def test_image_placements_keeps_the_worst_of_repeated_dos():
+    placed = proofer.image_placements(
+        "q 720 0 0 720 0 0 cm /Im1 Do Q q 10 0 0 10 0 0 cm /Im1 Do Q", {"Im1"})
+    assert placed == {"Im1": (720.0, 720.0)}
+
+
+def test_image_mask_is_not_an_unidentified_colorspace_gap(tmp_path):
+    """/ImageMask true images legitimately carry NO /ColorSpace (they paint
+    with the current fill color) - a clean CMYK file with a stencil mask must
+    stay color-PASS with no analysis gap, not flip to REVIEW."""
+    mask = stream("/Type /XObject /Subtype /Image /Width 1440 /Height 1440 "
+                  "/ImageMask true /BitsPerComponent 1", b"\x00" * 30)
+    objs = catalog_and_pages() + [
+        page(FULL_BLEED_PT, "<< /XObject << /Im1 5 0 R /Msk1 6 0 R >> >>", "4 0 R"),
+        stream("", "0 0 0 1 k q 720 0 0 720 0 0 cm /Im1 Do Q "
+                   "q 720 0 0 720 0 0 cm /Msk1 Do Q"),
+        CMYK_IMAGE_1440,
+        mask,
+    ]
+    info = proofer.analyze_pdf(build_pdf(tmp_path / "mask.pdf", objs))
+    assert info["analysis_gaps"] == []
+    assert info["colors"] == {"CMYK"}
+    st, msg = proofer.check_color(info)
+    assert st == "PASS" and "CMYK" in msg
+    # the mask still counts for resolution (1440px at 10in = 144 ppi)
+    assert sorted(i["ppi"] for i in info["images"]) == [144, 144]
+
+
+def test_image_without_colorspace_and_not_a_mask_still_gaps(tmp_path):
+    # a NON-mask image missing /ColorSpace stays an unidentified-colorspace
+    # gap - the mask exemption must not swallow genuinely broken images
+    weird = stream("/Type /XObject /Subtype /Image /Width 1440 /Height 1440 "
+                   "/BitsPerComponent 8", b"\x00" * 30)
+    objs = catalog_and_pages() + [
+        page(FULL_BLEED_PT, "<< /XObject << /Im1 5 0 R >> >>", "4 0 R"),
+        stream("", "0 0 0 1 k q 720 0 0 720 0 0 cm /Im1 Do Q"),
+        weird,
+    ]
+    info = proofer.analyze_pdf(build_pdf(tmp_path / "nocs.pdf", objs))
+    assert any("unidentified colorspace" in g for g in info["analysis_gaps"])

@@ -136,10 +136,11 @@ def _do_ctms(content, base=None):
     tracking the graphics-state CTM (q / Q / cm). `base` seeds the CTM so a
     Form XObject's stream can be scanned in its placed coordinate space."""
     base = list(base) if base else [1, 0, 0, 1, 0, 0]
-    toks = re.findall(r"/[^\s/<>\[\]()]+|-?\d+\.?\d*|[a-zA-Z*'\"]+", content)
+    # numbers may be leading-dot decimals (`.5`, `-.25`) - common in real exports
+    toks = re.findall(r"/[^\s/<>\[\]()]+|-?(?:\d+\.?\d*|\.\d+)|[a-zA-Z*'\"]+", content)
     ctm = base[:]; stack = []; nums = []; last_name = None; out = []
     for t in toks:
-        if re.match(r"^-?\d+\.?\d*$", t):
+        if re.match(r"^-?(?:\d+\.?\d*|\.\d+)$", t):
             nums.append(float(t)); continue
         if t.startswith("/"):
             last_name = t[1:]
@@ -355,7 +356,11 @@ def analyze_pdf(path):
         for im in raw_images:
             pw, ph = im["px"]
             placed = im["placed_pt"]
-            if placed and placed[0] > 1:
+            if placed and placed[0] > 1 and placed[1] > 1:
+                # grade the WORST axis - vertical stretch degrades print too
+                ppi = min(pw / (placed[0] / 72.0), ph / (placed[1] / 72.0))
+                how = "placed"
+            elif placed and placed[0] > 1:
                 ppi = pw / (placed[0] / 72.0)
                 how = "placed"
             else:

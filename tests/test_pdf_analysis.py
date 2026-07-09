@@ -207,6 +207,37 @@ def clean_cmyk_pdf(tmp_path):
     return build_pdf(tmp_path / "Wall_A_clean.pdf", objs)
 
 
+# ---------- P0-3: CTM tokenizer (leading-dot decimals) + worst-axis ppi ----------
+def test_image_placements_leading_dot_decimals():
+    placed = proofer.image_placements("q .5 0 0 .5 0 0 cm /Im1 Do Q", {"Im1"})
+    assert placed == {"Im1": (0.5, 0.5)}
+
+
+def test_image_placements_negative_leading_dot():
+    placed = proofer.image_placements("q -.25 0 0 .25 0 0 cm /Im1 Do Q", {"Im1"})
+    assert placed == {"Im1": (0.25, 0.25)}
+
+
+def test_image_placements_plain_numbers_unchanged():
+    placed = proofer.image_placements("q 144 0 0 288 10 20 cm /Im1 Do Q", {"Im1"})
+    assert placed == {"Im1": (144.0, 288.0)}
+
+
+def test_resolution_grades_worst_axis(tmp_path):
+    """720px square image placed 720pt wide x 1440pt tall: x-axis 72 ppi,
+    y-axis 36 ppi -> must grade 36 (vertical stretch used to be invisible)."""
+    img = stream("/Type /XObject /Subtype /Image /Width 720 /Height 720 "
+                 "/ColorSpace /DeviceCMYK /BitsPerComponent 8", b"\x00" * 10)
+    objs = catalog_and_pages() + [
+        page(FULL_BLEED_PT, "<< /XObject << /Im1 4 0 R >> >>", "5 0 R"),
+        img,
+        stream("", "q 720 0 0 1440 0 0 cm /Im1 Do Q"),
+    ]
+    info = proofer.analyze_pdf(build_pdf(tmp_path / "stretch.pdf", objs))
+    assert info["images"][0]["ppi"] == 36
+    assert proofer.check_resolution(info)[0] == "FAIL"
+
+
 # ---------- P0-2: all pages analyzed, not just page 1 ----------
 def two_page_pdf(tmp_path):
     """Page 1: clean CMYK at full+bleed size. Page 2: wrong-sized with an RGB

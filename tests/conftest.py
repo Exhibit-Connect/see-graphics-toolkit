@@ -18,6 +18,16 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path, monkeypatch):
+    """P2-7: every test runs from its own tmp dir so nothing can litter the
+    checkout (`_proof_*`/`_intake_*`/draft specs) or pick up repo files by
+    accident (cwd spec auto-discovery, cwd logo/key globs). Tests reach repo
+    data via absolute paths built from __file__; tests that need a specific
+    cwd chdir themselves (monkeypatch.chdir wins over this one)."""
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_proof_log(tmp_path, monkeypatch):
     """The proof log now defaults to a FIXED path at the repo root (P1-4).
     Point every test at its own tmp file so no test can write into the

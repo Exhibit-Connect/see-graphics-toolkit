@@ -143,6 +143,7 @@ var PT       = 72;                 // points per inch
 var GAP_IN   = 6;                  // spacing between artboards (inches, scaled)
 var MAX_AB_PT = 226 * 72;          // Illustrator's max artboard side is ~227.5"; guard just under it
 var MAX_ROW_W_PT = 200 * PT;       // wrap to a new row before hitting Illustrator's canvas limit
+var MAX_COL_H_PT = 220 * PT;       // stack rows only this tall, then start a new column band
 
 function inToPt(v)   { return v * PT; }
 function sPt(v)      { return inToPt(v * SCALE); }    // scaled inches -> points
@@ -319,11 +320,14 @@ else {
   var lArt    = getLayer(doc, "ARTWORK - place art here");
 
   var gapPt = sPt(GAP_IN);
+  var xBase = 0;        // left edge of the current column band
+  var bandW = 0;        // widest row seen in the current band
   var xCursor = 0;
   var yTop = 0;
   var rowMaxH = 0;
   var built = 0;
   var oversized = [];   // panels too large for a single Illustrator artboard at this scale
+  var failed = [];      // artboards Illustrator refused to create (layout/canvas errors)
 
   for (var i = 0; i < PANELS.length; i++) {
     var p = PANELS[i];
@@ -364,10 +368,22 @@ else {
         continue;
       }
 
-      // wrap to next row if this artboard would overflow the canvas width
-      if (xCursor > 0 && (xCursor + abWpt) > MAX_ROW_W_PT) {
-        xCursor = 0;
+      // wrap to next row if this artboard would overflow the row width cap
+      if (xCursor > xBase && (xCursor - xBase + abWpt) > MAX_ROW_W_PT) {
+        xCursor = xBase;
         yTop = yTop - (rowMaxH + gapPt);
+        rowMaxH = 0;
+      }
+      // start a new column BAND (back to the top, shifted right past the widest
+      // row so far) when this row would run past Illustrator's ~227.5" canvas
+      // height - the old single-column layout made artboards.add throw for the
+      // later rows of a large booth and misfiled those normal-size panels as
+      // "too large - tile/seam separately".
+      if (yTop < 0 && (-yTop + abHpt) > MAX_COL_H_PT) {
+        xBase = xBase + bandW + gapPt;
+        bandW = 0;
+        xCursor = xBase;
+        yTop = 0;
         rowMaxH = 0;
       }
 
@@ -384,7 +400,9 @@ else {
           ab.name = displayName;
         }
       } catch (eAdd) {
-        oversized.push(displayName + "  (artboard could not be created: " + eAdd + ")");
+        // A layout/canvas failure is NOT an oversized panel - report it in its
+        // own list so a normal wall is never told to "tile/seam separately".
+        failed.push(displayName + "  (" + eAdd + ")");
         continue;
       }
 
@@ -420,6 +438,7 @@ else {
                wTrimPt - sPt(4), abHpt - sPt(2));
 
       xCursor += abWpt + gapPt;
+      if ((xCursor - gapPt - xBase) > bandW) bandW = xCursor - gapPt - xBase;
       if (abHpt > rowMaxH) rowMaxH = abHpt;
       built++;
     }
@@ -431,6 +450,7 @@ else {
         "\rSpec: " + (SPEC.__source || "built-in") +
         "\rArtboards created: " + built +
         (oversized.length ? "\r\rSKIPPED (too large for one artboard — see each item):\r  - " + oversized.join("\r  - ") : "") +
+        (failed.length ? "\r\rCOULD NOT CREATE (layout/canvas error — rerun or report):\r  - " + failed.join("\r  - ") : "") +
         "\rScale: " + (SCALE * 100) + "%  |  Bleed: " + BLEED_PER_SIDE + '" per side (' + (BLEED_PER_SIDE * 2) + '" total)' +
         "\r\rColors:  cyan = bleed,  black = trim,  magenta = safe area," +
         "\r  orange = keep-clear (fixture/TV/shelf),  green = live art area,  red = door." +

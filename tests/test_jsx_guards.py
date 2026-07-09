@@ -79,6 +79,24 @@ def test_jsx_continuous_oversize_message_matches_the_flag():
     assert "tile/seam separately" in src                    # non-continuous keeps its wording
 
 
+def test_jsx_bands_layout_height_and_reports_canvas_failures_separately():
+    src = _jsx()
+    assert "MAX_COL_H_PT = 220 * PT" in src                 # cumulative height is now capped
+    assert "xBase = xBase + bandW + gapPt" in src           # new band shifts right
+    assert "var failed = []" in src
+    assert "COULD NOT CREATE (layout/canvas error — rerun or report):" in src
+    # artboards.add failures must NOT land in the tile/seam (oversized) bucket
+    assert 'failed.push(displayName + "  (" + eAdd + ")")' in src
+    assert "artboard could not be created" not in src
+
+
+def test_claude_md_has_the_manual_illustrator_checklist():
+    md = open(os.path.join(os.path.dirname(JSX_PATH), "..", "CLAUDE.md"), encoding="utf-8").read()
+    assert "Manual Illustrator smoke checklist" in md
+    assert "Side B" in md and "door_marks" in md
+    assert "corrupted JSON" in md.lower() or "corrupted json" in md.lower()
+
+
 def test_jsx_mirrors_side_b():
     src = _jsx()
     assert "var mirrored = (sIdx === 1);" in src            # Side B of a double-sided panel

@@ -65,6 +65,28 @@ preview rasterizes via that same Chrome helper (`render.svg_to_png`, sized to th
 wide booths aren't cropped; falls back to **qlmanage** only if Chrome is absent); **Ghostscript** rasterizes PDFs for OCR. **Mac-centric.** The `.jsx`
 runs only inside Illustrator (a `CMYKColor is not defined` error anywhere else is expected).
 
+## Manual Illustrator smoke checklist (.jsx changes)
+No automated Illustrator run exists — after ANY change to `tools/SEE_Wall_Template_Generator.jsx`
+(and before shipping it), run this 5-step check on macOS in Adobe Illustrator:
+1. **Happy path:** File ▸ Scripts ▸ Other Script… → the generator, pick
+   `examples/1_booth_spec_example.json`. The run finishes with the "Done." alert and the artboard
+   count equals every non-oversized panel, counting double-sided panels twice (Side A + Side B);
+   any skipped items are listed with their reason (tile/seam vs. continuous vs. layout error).
+2. **door_marks:** on a panel carrying `door_marks` (add a demo panel to a copy of the example if
+   none has them), each opening shows a dashed red rect at full trim height with its label, plus
+   handle/lock holes when the entry sets `side`.
+3. **Side B mirroring:** on a `"sided": "double"` panel with a door and zones, Side B shows the
+   door on the MIRRORED hand (left↔right) and each zone at the mirrored x (`w - x - zw`).
+   Keep-clear zones appear on BOTH sides (default: over-marking beats art over hardware).
+4. **Corrupt spec aborts:** pick a deliberately corrupted JSON (e.g. truncate a copy) → the script
+   alerts the parse error and creates NO document. The built-in example builds ONLY on explicit
+   Cancel.
+5. **Key + settings:** guide colors match the key (cyan bleed / black trim / magenta safe /
+   orange keep-clear / green live / red door) and the final alert's scale + bleed match the spec.
+
+Note (follow-up): interior zones currently mirror onto Side B unconditionally; a per-zone `sides`
+field ("A"/"B"/"both") would let a zone opt out of one side if production ever needs that.
+
 ## Tests + definition of done
 Run `pip install -r requirements-dev.txt && pytest` (104 tests; covers the pure helpers in `intake.py` /
 `proofer.py` / `make_proof.py` / `branding.py` / `dashboard.py` / `client_templates.py` / `render.py` /

@@ -35,3 +35,37 @@ def test_readme_points_at_live_docs():
     assert "Graphics_Design_AI_Brief.pdf" not in readme
     assert "Workflow_Map" in readme
     assert "Instructions.md" in readme
+
+
+def _read(*parts):
+    with open(os.path.join(REPO, *parts), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_readme_example_numbering_matches_examples_dir():
+    """P3-2: the README's 'numbered 1->N' claim tracks the actual files."""
+    numbered = {f.split("_")[0] for f in os.listdir(os.path.join(REPO, "examples"))
+                if f[0].isdigit()}
+    hi = max(int(n) for n in numbered)
+    assert f"1->{hi}" in _read("README.md")
+
+
+def test_docs_document_ack_review_next_to_approve():
+    """P3-2: everywhere --approve is documented, the NEEDS-REVIEW
+    acknowledgment (--ack-review, from P0-8) is documented too."""
+    for name in ("README.md", "CLAUDE.md"):
+        txt = _read(name)
+        assert "--approve" in txt and "--ack-review" in txt, name
+    assert "acknowledge" in _read("docs", "Instructions.md")
+
+
+def test_no_stale_or_overreaching_claims():
+    """P3-2: no stale test count; the intake wording promises 'flagged for
+    confirmation' (the real enforcement) and the approval is described as
+    stamped+logged, not 'locked'."""
+    assert "104 tests" not in _read("CLAUDE.md")
+    instructions = _read("docs", "Instructions.md")
+    assert "never guessed" not in instructions
+    assert "flagged for your confirmation" in instructions
+    assert "**locked**" not in instructions
+    assert "logged" in instructions

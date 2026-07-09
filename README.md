@@ -10,7 +10,7 @@ checks can never disagree.
 see-graphics-toolkit/
 ├─ tools/       the programs you run (Python + the Illustrator script)
 ├─ docs/        read these — the workflow map and the instructions
-├─ examples/    a finished example booth, numbered 1->6 in workflow order
+├─ examples/    a finished example booth, numbered 1->7 in workflow order
 ├─ README.md    you are here
 └─ LICENSE
 ```
@@ -26,8 +26,8 @@ see-graphics-toolkit/
 | Build templates | `SEE_Wall_Template_Generator.jsx` | Illustrator script → every wall template, from the booth file. |
 | Preview templates | `preview_templates.py` | Quick PNG/SVG picture of every panel's layout from the booth file — no Illustrator needed. |
 | Tell the client | `generate_spec_packet.py` | The client submission spec sheet (PDF), from the same booth file. |
-| Check artwork | `proofer.py` | Auto-checks a returned file: size, color, resolution, fonts, spelling. |
-| Proof & sign-off | `make_proof.py` | Branded proof — one item, or a whole-job multi-page document (cover/summary page + one page per graphic); dated, locked client approval; logs each one. |
+| Check artwork | `proofer.py` | Auto-checks a returned file: size + bleed, color, resolution, fonts, printer marks, and spelling (a dictionary-based advisory — needs live text, so outlined type isn't spell-checked). |
+| Proof & sign-off | `make_proof.py` | Branded proof — one item, or a whole-job multi-page document (cover/summary page + one page per graphic); dated client approval, stamped on the proof and logged. |
 | (shared) | `ai_client.py` | OpenRouter client used by the AI steps. |
 | (shared) | `branding.py` | Shared SEE logo + contact header, so every generated document carries the same branding. |
 
@@ -45,6 +45,8 @@ python3 tools/generate_spec_packet.py examples/1_booth_spec_example.json
 python3 tools/proofer.py path/to/client_artwork.pdf
 # 5. proof + sign-off
 python3 tools/make_proof.py path/to/client_artwork.pdf       # then, once OK'd:  --approve "Client Name"
+#    (approving a NEEDS-REVIEW result additionally requires --ack-review "reason" — the
+#     acknowledgment is recorded on the proof and in the log)
 ```
 Full detail is in `docs/Instructions.md`.
 
@@ -62,11 +64,19 @@ Check it: `python3 tools/ai_client.py --check`. Without a key, the AI step write
   ```sh
   pip install -r requirements.txt
   ```
-- Ghostscript and Google Chrome (used to render the PDFs)
+- Ghostscript and Google Chrome (or Chromium — set `SEE_CHROME` to point at it; used to render the PDFs)
+- tesseract (optional — OCR of visual/slide-deck handoffs in `intake.py`; without it, intake still
+  works on text-based handoffs)
 
 ## Running tests
-The pytest suite covers the parsing/check helpers, the PDF-analysis path, the
-approval gate, and the proof-log round-trip — no Chrome/Ghostscript needed.
+The pytest suite (420+ tests) covers every Python tool — intake parsing and the
+seeding cascade, the PDF-analysis path (`proofer.py`), the approval gate and
+proof-log round-trip (`make_proof.py`/`dashboard.py`), the client-facing
+generators (`generate_spec_packet.py`, `client_templates.py`,
+`preview_templates.py`), branding, spec validation, the render helpers, the
+AI client (network faked), and drift guards tying the `.jsx` constants to the
+Python side. The default tier needs no Chrome/Ghostscript/tesseract; the few
+tests marked `external` exercise those binaries when present.
 ```sh
 pip install -r requirements-dev.txt   # runtime pins + pytest
 pytest

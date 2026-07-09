@@ -17,7 +17,7 @@ The **booth file** is one small file that lists every wall and its size. Everyth
 - **Give Claude:** the 3D team's placement drawings — **send every file they give you** (for example a "details" deck *and* a "renders" deck), not just one, so nothing gets missed.
 - **Say:** *"Make the booth file for [Client – Show – Size] from this handoff."*
 - **You get back:** a draft booth file **+ a short checklist** of things to confirm — finishes (fabric, vinyl…), which wall has the door, any TV/shelf spots, the due date.
-- **If the handoff is a *picture* (a slide deck with the sizes drawn on, not typed):** Claude reads the sizes right off the images at high resolution — catching even small labels — and fills the draft for you. Each one is marked to **confirm**, and anything it can't read clearly (or that has no printed size) is flagged to **measure**, never guessed.
+- **If the handoff is a *picture* (a slide deck with the sizes drawn on, not typed):** Claude reads the sizes right off the images at high resolution — catching even small labels — and fills the draft for you. Each one is marked to **confirm**, and anything it can't read clearly (or that has no printed size) is flagged to **measure** — every size read this way is always flagged for your confirmation before it drives anything downstream.
 - **Your job:** answer the checklist (ask Marc or the 3D team if unsure) and tell Claude the answers. Done — that file now drives every step below.
 
 ### 2 · Make the wall templates (in Illustrator)
@@ -44,7 +44,7 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 ### 4 · Client sends artwork back → check it
 - **Give Claude:** the client's file(s).
 - **Say:** *"Check this artwork against the booth file."*
-- **You get back:** a **PASS / NEEDS REVIEW / FAIL** report that catches wrong size, low resolution, RGB‑instead‑of‑CMYK, fonts not outlined, and spelling — with notes on what to fix.
+- **You get back:** a **PASS / NEEDS REVIEW / FAIL** report that catches wrong size or missing bleed, low resolution, RGB‑instead‑of‑CMYK, fonts not outlined, and misspellings — with notes on what to fix. *(The spelling check is a dictionary‑based advisory: it needs live, selectable text, so a file with all type outlined — which is what we ask for — reports "no readable text (already outlined)" rather than a spelling result. It flags words for a human to look at; it isn't an AI proofread.)*
 - **Plus a plain‑English fix list.** When something's off, the report adds a **"What to change"** list written for the client — for example *"Resize to 78.12″ × 134.26″ and add 1″ bleed on every side,"* or *"Convert the file to CMYK"* — and a **marked‑up preview**. Claude **never edits the client's file** (an automatic color or size change could ruin a print run); it tells them exactly what to fix, so you can forward it as‑is. The same fix list also appears on the proof.
 
 ### 5 · Send a proof and get sign‑off
@@ -52,7 +52,7 @@ You'll get one ready‑to‑design template per wall (the colored guide lines ar
 - **You get back:** one standardized proof — the artwork, a full **spec list** (size, material, finishing, quantity, sides, seams, revision), the automated checks with a color key, a clear **review notice**, a **three‑way sign‑off** (approve as‑is / approve with changes / resubmit), and a footer showing who prepped and QC'd it.
 - **Helpful to add:** *"prepped by [name], QC'd by [name], for delivery"* — Claude puts those on the sheet (a real name, never a placeholder).
 - When the client approves it, **say:** *"Mark it approved by [client name]."*
-- **You get back:** a dated, **locked** approval record (and it's logged). Claude won't finalize an approval if the file still **fails a check** *or* if anything is still marked **"to be confirmed"** — so no half‑finished proof reaches a client.
+- **You get back:** a dated approval, **stamped on the proof and logged**. Claude won't finalize an approval if the file still **fails a check**, if the size couldn't be verified, or if anything is still marked **"to be confirmed"** — so no half‑finished proof reaches a client. If the checks say **NEEDS REVIEW**, Claude asks you to acknowledge the flagged items with a short reason (e.g. *"checked the spelling flag manually — it's a brand name"*); the reason is recorded on the proof and in the log. And if the approval can't be written to the log, it isn't stamped at all.
 - **For a whole job at once:** give Claude **all** the graphics files together and say *"Make the full proof document for this job."* You get **one PDF** — a **cover page** that lists every graphic (size, material, quantity) and then one page per graphic for the client to review and sign.
 
 ---

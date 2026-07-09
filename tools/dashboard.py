@@ -29,6 +29,12 @@ try:
 except Exception:
     openpyxl = None
 
+# The proof-log column contract is OWNED by make_proof.LOG_HEADER (P2-5) -
+# this module reads exactly what make_proof writes ('Job #', 'Panel / Item',
+# 'Verdict', 'Approved by', ...). tests/test_proof_log.py round-trips real
+# rows and pins the shared header so a rename on either side fails a test.
+LOG_HEADER = make_proof.LOG_HEADER
+
 LOG = "proof_log.xlsx"
 STAGE_COLORS = {"Intake": "#8a8a8a", "Awaiting confirm": "#F7941E",
                 "Awaiting client artwork": "#7B61FF",

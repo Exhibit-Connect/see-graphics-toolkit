@@ -172,3 +172,39 @@ def test_find_logs_explicit_log_flag_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("SEE_PROOF_LOG", str(tmp_path / "other.xlsx"))
     assert dashboard.find_logs(explicit=str(log)) == [str(log)]
     assert dashboard.find_logs(explicit=str(tmp_path / "missing.xlsx")) == []
+
+
+# ---------- shared header contract + stage round-trip (P2-5) ----------
+def test_header_constant_is_shared_between_modules():
+    assert dashboard.LOG_HEADER is mp.LOG_HEADER
+    # every column the dashboard's readers rely on must survive a header edit
+    # in make_proof - renaming one there fails here, renaming a literal in
+    # dashboard fails the round-trip tests below
+    for col in ("Date", "Job", "Job #", "Panel / Item", "File", "Verdict",
+                "Status", "Approved by"):
+        assert col in mp.LOG_HEADER, f"dashboard reads {col!r}"
+
+
+def test_logged_approval_rows_drive_job_stage_approved(tmp_path, monkeypatch):
+    # a REAL logged approval (not a hand-built row dict) must read back as
+    # stage 'Approved' - the full write -> read -> stage contract
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    _log_row(panel="F1", verdict="PASS", approver="Jane Client", status="APPROVED")
+    _log_row(panel="F2", verdict="PASS", approver="Jane Client", status="APPROVED")
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    spec = {"job": {"name": "Booth Build", "job_number": "1001"},
+            "panels": [{"name": "F1"}, {"name": "F2"}]}
+    assert dashboard.latest_verdict(rows) == "PASS"
+    assert dashboard.job_stage(spec, rows) == "Approved"
+
+
+def test_logged_partial_approval_round_trips_as_partial(tmp_path, monkeypatch):
+    log = tmp_path / "proof_log.xlsx"
+    monkeypatch.setenv("SEE_PROOF_LOG", str(log))
+    _log_row(panel="F1", verdict="PASS", approver="Jane Client", status="APPROVED")
+    _log_row(panel="F2", verdict="REVIEW")                 # not approved
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
+    spec = {"job": {"name": "Booth Build", "job_number": "1001"},
+            "panels": [{"name": "F1"}, {"name": "F2"}]}
+    assert dashboard.job_stage(spec, rows) == "Approved (1/2 items)"

@@ -32,7 +32,8 @@ except Exception:
 LOG = "proof_log.xlsx"
 STAGE_COLORS = {"Intake": "#8a8a8a", "Awaiting confirm": "#F7941E",
                 "Awaiting client artwork": "#7B61FF",
-                "In proof": "#00AEEF", "Approved": "#2E9E40"}
+                "In proof": "#00AEEF", "Approved": "#2E9E40",
+                "UNREADABLE": "#E31D3D"}
 DUE_SOON_DAYS = 3
 
 
@@ -74,14 +75,24 @@ def latest_verdict(log_rows):
 def job_stage(spec, log_rows):
     """The job's workflow stage. An explicit job.status in the booth file WINS
     (lets a human set a stage we can't infer, e.g. 'Awaiting client artwork');
-    otherwise infer from the proof log + the spec. Pure."""
+    otherwise infer from the proof log + the spec. 'Approved' means EVERY
+    panel in the log has its LATEST row approved and the latest verdict is not
+    FAIL — one approved panel of five (or an approval followed by a failing
+    re-proof) used to green the whole job. Partial approval shows as
+    'Approved (2/5 items)'. Pure."""
     explicit = (spec.get("job", {}) or {}).get("status")
     if explicit and str(explicit).strip():
         return str(explicit).strip()
     rows = log_rows or []
-    if any(not _blank(r.get("Approved by")) for r in rows):
-        return "Approved"
     if rows:
+        latest = {}
+        for r in rows:                       # file order = oldest first
+            latest[str(r.get("Panel / Item") or "?")] = r
+        approved = sum(1 for r in latest.values() if not _blank(r.get("Approved by")))
+        if approved == len(latest) and latest_verdict(rows) != "FAIL":
+            return "Approved"
+        if 0 < approved < len(latest):
+            return f"Approved ({approved}/{len(latest)} items)"
         return "In proof"
     if proofer.unverified_panels(spec):
         return "Awaiting confirm"
@@ -112,12 +123,32 @@ def job_risk_flags(spec, log_rows, today, due_soon_days=DUE_SOON_DAYS):
 def dashboard_rows(specs, log_index, today):
     """Build the dashboard table model (one dict per job) from a list of booth
     specs and a proof-log index {job_number: [row, ...]}. Sorted most-urgent
-    first (soonest/overdue due date, dateless jobs last). Pure — no I/O."""
+    first (soonest/overdue due date, dateless jobs last). Jobs without a usable
+    job_number (blank or 'TBD' - e.g. intake drafts) join their log rows by the
+    'Job' name column instead of never leaving pre-proof. An unreadable booth
+    file ({'__unreadable': True} from discover_specs) stays VISIBLE as an
+    UNREADABLE row instead of vanishing from the board. Pure — no I/O."""
+    # secondary join: log rows by Job name, oldest first (for no-number jobs)
+    name_index = {}
+    for rlist in log_index.values():
+        for r in rlist:
+            name_index.setdefault(str(r.get("Job") or ""), []).append(r)
     rows = []
     for spec in specs:
         j = spec.get("job", {}) or {}
+        if spec.get("__unreadable"):
+            rows.append({"job_number": "—",
+                         "name": j.get("name") or spec.get("__source") or "—",
+                         "client": "—", "show": "—", "due_date": "—",
+                         "days_to_due": None, "stage": "UNREADABLE", "verdict": None,
+                         "flags": ["booth file could not be parsed — fix the JSON"]})
+            continue
         job_no = j.get("job_number") or j.get("estimate") or ""
-        logs = log_index.get(str(job_no), []) if job_no else []
+        joinable = not (_blank(job_no) or str(job_no).strip().upper() in ("TBD", "TBA"))
+        if joinable:
+            logs = log_index.get(str(job_no), [])
+        else:
+            logs = name_index.get(str(j.get("name") or ""), [])
         rows.append({
             "job_number": job_no or "—",
             "name": j.get("name") or j.get("client") or "—",
@@ -138,7 +169,11 @@ def dashboard_rows(specs, log_index, today):
 def discover_specs(jobs_dir=None):
     """Find every booth file to show. With --jobs-dir, scans it RECURSIVELY for
     *booth_spec*.json; otherwise looks in cwd and an examples/ folder (next to or
-    above this script). Returns [(path, spec), ...], de-duped, bad files skipped."""
+    above this script). Returns [(path, spec), ...], de-duped. A file that can't
+    be parsed (bad JSON, or a top-level array instead of an object) is NOT
+    silently skipped - the job used to vanish from the board - it yields a
+    stderr warning and an {'__unreadable': True} placeholder spec so the row
+    stays visible as UNREADABLE."""
     here = os.path.dirname(os.path.abspath(__file__))
     paths = []
     if jobs_dir:
@@ -155,9 +190,14 @@ def discover_specs(jobs_dir=None):
         seen.add(rp)
         try:
             spec = json.load(open(p))
-        except Exception:
-            continue
-        spec["__source"] = os.path.basename(p)
+            if not isinstance(spec, dict):
+                raise ValueError(f"top-level JSON is a {type(spec).__name__}, expected an object")
+            spec["__source"] = os.path.basename(p)
+        except Exception as e:
+            print(f"⚠ booth file could not be parsed, shown as UNREADABLE: {p} "
+                  f"({type(e).__name__}: {e})", file=sys.stderr)
+            spec = {"__unreadable": True, "__source": os.path.basename(p),
+                    "job": {"name": os.path.basename(p)}}
         out.append((p, spec))
     return out
 
@@ -191,27 +231,36 @@ def find_log():
 
 
 def read_proof_log(path=None):
-    """Read proof_log.xlsx into {job_number: [row-dict, ...]} keyed by 'Job #'.
-    Rows keep file order (oldest first). Returns {} when the log or openpyxl is
-    missing — the dashboard then just shows every job pre-proof."""
+    """Read a proof log into ({job_number: [row-dict, ...]}, warning) keyed by
+    'Job #'. Rows keep file order (oldest first). `warning` is None on success,
+    else one line saying WHY nothing was read (openpyxl missing / log absent /
+    unreadable) — a silently-empty {} used to regress every job to pre-proof
+    and could never show 'latest proof FAILS preflight'. Callers must surface
+    the warning (stderr + the dashboard meta line)."""
     path = path or find_log()
-    if not openpyxl or not path or not os.path.exists(path):
-        return {}
+    if not openpyxl:
+        return {}, "openpyxl not installed — proof log NOT read; stages shown pre-proof"
+    if not path or not os.path.exists(path):
+        return {}, (f"proof log not found ({path or make_proof.default_log_path()}) — "
+                    f"stages shown pre-proof")
     try:
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    except Exception:
-        return {}
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
+    except Exception as e:
+        return {}, (f"proof log NOT read ({path}: {type(e).__name__}: {e}) — "
+                    f"stages shown pre-proof")
+    try:
+        rows = list(wb.active.iter_rows(values_only=True))
+    finally:
+        wb.close()
     if not rows:
-        return {}
+        return {}, None
     header = [str(h) if h is not None else "" for h in rows[0]]
     index = {}
     for r in rows[1:]:
         d = {header[i]: r[i] for i in range(min(len(header), len(r)))}
         key = str(d.get("Job #") or "")
         index.setdefault(key, []).append(d)
-    return index
+    return index, None
 
 
 # ---------- report ----------
@@ -226,9 +275,13 @@ def _due_cell(row):
     return f'{base} <span class="{cls}">({dd}d)</span>'
 
 
-def build_dashboard_html(rows, today=None):
+def build_dashboard_html(rows, today=None, log_note=None):
+    """`log_note` (a read_proof_log warning) renders in the meta line so a
+    board built without the proof log SAYS so instead of looking healthy."""
     today = today or datetime.date.today()
     at_risk = sum(1 for r in rows if r["flags"])
+    note_html = (f' &nbsp;·&nbsp; <b style="color:{branding.RED}">⚠ {html.escape(log_note)}</b>'
+                 if log_note else "")
     body = ""
     for r in rows:
         flags = ("".join(f'<span class="flag">{html.escape(f)}</span>' for f in r["flags"])
@@ -280,7 +333,7 @@ def build_dashboard_html(rows, today=None):
     </style></head><body>
       {branding.header_html("Job Status Dashboard")}
       <h1>Active jobs</h1>
-      <div class="meta"><b>{len(rows)}</b> job(s) &nbsp;·&nbsp; <b>{at_risk}</b> with risk flag(s) &nbsp;·&nbsp; as of {today.strftime('%B %d, %Y')}</div>
+      <div class="meta"><b>{len(rows)}</b> job(s) &nbsp;·&nbsp; <b>{at_risk}</b> with risk flag(s) &nbsp;·&nbsp; as of {today.strftime('%B %d, %Y')}{note_html}</div>
       <div class="legend">Stage: {legend}</div>
       <table>
         <thead><tr><th>Job #</th><th>Job</th><th>Show</th><th>Stage</th><th>Due</th><th>Risk flags</th></tr></thead>
@@ -308,16 +361,23 @@ def main():
     today = datetime.date.today()
     specs = [s for _, s in discover_specs(jobs_dir)]
     log_paths = find_logs(jobs_dir, log_arg)
-    log_index = {}
+    log_index, log_warnings = {}, []
     for p in log_paths:                       # merge every found log
-        for k, v in read_proof_log(p).items():
+        idx, warn = read_proof_log(p)
+        if warn:
+            log_warnings.append(warn)
+        for k, v in idx.items():
             log_index.setdefault(k, []).extend(v)
-    print("Proof log(s) read:", ", ".join(log_paths) if log_paths else
-          f"none found ({make_proof.default_log_path()}) — stages shown pre-proof")
+    if not log_paths:
+        _, warn = read_proof_log(None)        # openpyxl-missing vs not-found reason
+        log_warnings.append(warn or "proof log not found — stages shown pre-proof")
+    for w in log_warnings:
+        print(f"⚠ {w}", file=sys.stderr)
+    print("Proof log(s) read:", ", ".join(log_paths) if log_paths else "none")
     rows = dashboard_rows(specs, log_index, today)
 
     hp = os.path.abspath("job_dashboard.html")
-    open(hp, "w").write(build_dashboard_html(rows, today))
+    open(hp, "w").write(build_dashboard_html(rows, today, log_note="; ".join(log_warnings) or None))
     print(f"jobs: {len(rows)}  ·  at risk: {sum(1 for r in rows if r['flags'])}")
     for r in rows:
         flag = ("  ⚠ " + "; ".join(r["flags"])) if r["flags"] else ""

@@ -348,6 +348,19 @@ def _blank_pdf(path, pages=1):
         w.write(f)
 
 
+def test_draft_spec_includes_tbd_job_number_and_pending_entry(monkeypatch, tmp_path):
+    # P1-5: intake drafts carry job_number 'TBD' (visible pending) so the
+    # dashboard/name-join and the proof placeholder gate both see it
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")
+    monkeypatch.setattr(intake, "ocr_pages", lambda *a, **k: ("", []))
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "Num Job"])
+    intake.main()
+    spec = json.load(open("booth_spec_Num_Job_DRAFT.json"))
+    assert spec["job"]["job_number"] == "TBD"
+    assert any("job number" in p for p in spec["pending_inputs"])
+
+
 def test_main_surfaces_tool_warnings_in_review_and_spec(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     _blank_pdf(tmp_path / "deck.pdf")                       # no text -> OCR branch

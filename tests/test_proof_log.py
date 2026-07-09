@@ -51,7 +51,7 @@ def test_rows_round_trip_into_dashboard(tmp_path, monkeypatch):
     monkeypatch.setenv("SEE_PROOF_LOG", str(log))
     assert _log_row(panel="F1") == str(log)
     _log_row(panel="F2", verdict="REVIEW", approver="Jane Client")
-    rows = dashboard.read_proof_log(str(log))["1001"]
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
     assert [r["Panel / Item"] for r in rows] == ["F1", "F2"]     # file order kept
     assert rows[0]["Date"] == datetime.date.today().isoformat()
     assert rows[1]["Approved by"] == "Jane Client"
@@ -76,7 +76,7 @@ def test_interleaved_writes_block_on_the_lock_and_both_persist(tmp_path, monkeyp
     t.join(timeout=10)
     assert done == [str(log)]
     _log_row(panel="F2")
-    rows = dashboard.read_proof_log(str(log))["1001"]
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]
     assert [r["Panel / Item"] for r in rows] == ["F1", "F2"]   # nobody's row lost
 
 
@@ -142,7 +142,7 @@ def test_non_approve_logs_after_render_and_records_the_outcome(tmp_path, monkeyp
     mp.build_single_proof("F1.pdf", CLEAN_SPEC, "Booth Build", "1001",
                           None, dict(META), None)
     assert order == ["render", "log"]                   # the log can't claim a
-    rows = dashboard.read_proof_log(str(log))["1001"]   # proof that wasn't made
+    rows = dashboard.read_proof_log(str(log))[0]["1001"]   # proof that wasn't made
     assert "PDF render failed (HTML only)" in rows[-1]["Status"]
 
 
@@ -159,7 +159,7 @@ def test_find_logs_env_var_and_jobs_dir_merge(tmp_path, monkeypatch):
     assert [os.path.realpath(p) for p in paths] == [os.path.realpath(str(sub / "proof_log.xlsx"))]
     merged = {}
     for p in paths:
-        for k, v in dashboard.read_proof_log(p).items():
+        for k, v in dashboard.read_proof_log(p)[0].items():
             merged.setdefault(k, []).extend(v)
     assert [r["Panel / Item"] for r in merged["1001"]] == ["F1"]
 

@@ -608,7 +608,8 @@ def main(argv=None):
             if seeded:
                 spec_panels, panel_source = seeded, "ai-vision"
 
-    pending = ["finish/substrate per panel", "double-sided structures",
+    pending = ["job number (TBD — set it so proofs join the dashboard by number)",
+               "finish/substrate per panel", "double-sided structures",
                "door wall + side", "TV/shelf/fixture zones (size + position)", "due date"]
     if undimensioned:
         pending.insert(0, "DIMENSIONS for AI-seen surfaces with no printed size (measure/confirm — do NOT guess): "
@@ -617,7 +618,7 @@ def main(argv=None):
     spec = {
         "_about": "DRAFT booth spec produced by intake.py from a 3D handoff. CONFIRM before production. "
                   "Feeds SEE_Wall_Template_Generator.jsx, generate_spec_packet.py and proofer.py.",
-        "job": {"name": job, "due_date": "TBD"},
+        "job": {"name": job, "job_number": "TBD", "due_date": "TBD"},
         "settings": SETTINGS, "door_standard": DOOR_STD,
         "panels": spec_panels,
         "pending_inputs": pending,

@@ -329,7 +329,9 @@ def ai_enrich(path, n_pages, det_panels, max_pages=None):
     try:
         prompt = AI_PROMPT.replace("__DET__", json.dumps(det_panels))
         if not ai_client.available():
-            payload = ai_client._redacted_payload(prompt, imgs)
+            # json_mode=True mirrors the live ask_json call below - the dry-run
+            # is documented as "the exact request", so it must carry response_format
+            payload = ai_client._redacted_payload(prompt, imgs, json_mode=True)
             with open("_intake_ai_dryrun.json", "w") as f:
                 f.write(json.dumps(payload, indent=2))
             return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",

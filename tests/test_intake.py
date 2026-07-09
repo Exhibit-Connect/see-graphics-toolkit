@@ -115,25 +115,102 @@ def test_parse_graphic_key_reads_labels_and_dims():
             'C 107.325"w x 153.8125"h\n'
             'E 253.875"w x 153.8125"h\n'
             'K 78.75"w x 35.433"h\n')
-    panels = intake.parse_graphic_key(text)
+    panels, conflicts = intake.parse_graphic_key(text)
     assert panels == [
         {"name": "C", "w": 107.325, "h": 153.8125},
         {"name": "E", "w": 253.875, "h": 153.8125},
         {"name": "K", "w": 78.75, "h": 35.433},
     ]
+    assert conflicts == []
 
 
 def test_parse_graphic_key_expands_ranges():
     # "H1-H2 ..." means H1 AND H2 share that size -> two panels
-    panels = intake.parse_graphic_key('H1-H2 39.0625"w x 153.8125"h\n')
+    panels, conflicts = intake.parse_graphic_key('H1-H2 39.0625"w x 153.8125"h\n')
     assert [p["name"] for p in panels] == ["H1", "H2"]
     assert all(p["w"] == 39.0625 and p["h"] == 153.8125 for p in panels)
+    assert conflicts == []
 
 
 def test_parse_graphic_key_ignores_non_key_lines():
     # headers / prose / out-of-range numbers are not panels
     text = "Graphic Key\nSome notes here\nBooth is 30x30\nC 700\"w x 50\"h\n"
-    assert intake.parse_graphic_key(text) == []   # 700 is out of the 1..600 range
+    assert intake.parse_graphic_key(text) == ([], [])   # 700 is out of the 1..600 range
+
+
+# ---------- P1-2: full range expansion, unit letters, OCR conflicts, norm dedupe ----------
+def test_parse_graphic_key_expands_full_numeric_range():
+    # 'H1-H4' seeds H1..H4 — splitting on '-' used to keep only the endpoints,
+    # silently dropping H2/H3 from the draft
+    panels, conflicts = intake.parse_graphic_key('H1-H4 39.0625"w x 153.8125"h\n')
+    assert [p["name"] for p in panels] == ["H1", "H2", "H3", "H4"]
+    assert all(p["w"] == 39.0625 and p["h"] == 153.8125 for p in panels)
+    assert conflicts == []
+
+
+def test_parse_graphic_key_expands_letter_range():
+    panels, conflicts = intake.parse_graphic_key('C-E 107.325"w x 153.8125"h\n')
+    assert [p["name"] for p in panels] == ["C", "D", "E"]
+    assert conflicts == []
+
+
+def test_parse_graphic_key_unexpandable_range_keeps_endpoints_and_notes_it():
+    panels, conflicts = intake.parse_graphic_key('A1-B2 39"w x 50"h\n')
+    assert [p["name"] for p in panels] == ["A1", "B2"]
+    assert any(isinstance(c, str) and "could not be fully expanded" in c for c in conflicts)
+
+
+def test_parse_graphic_key_repeated_label_two_sizes_is_a_conflict():
+    panels, conflicts = intake.parse_graphic_key('C 10"w x 20"h\nC 12"w x 20"h\n')
+    assert [p["name"] for p in panels] == ["C"]
+    assert panels[0]["w"] == 10.0                       # first size kept
+    assert ("C", (10.0, 20.0), (12.0, 20.0)) in conflicts
+
+
+def test_parse_panels_honors_height_first_unit_letters():
+    # '96"h x 48"w' is height-first: the unit letters must not be discarded
+    panels, conflicts = intake.parse_panels('Wall A: 96"h x 48"w\n')
+    assert panels == [{"name": "Wall A", "w": 48.0, "h": 96.0}]
+    assert conflicts == []
+
+
+def test_parse_panels_width_first_unchanged():
+    panels, conflicts = intake.parse_panels('Wall A: 48"w x 96"h\n')
+    assert panels == [{"name": "Wall A", "w": 48.0, "h": 96.0}]
+    assert conflicts == []
+
+
+def test_parse_panels_contradicting_units_recorded_as_conflict():
+    panels, conflicts = intake.parse_panels('Wall A: 96"h x 48"h\n')
+    assert [p["name"] for p in panels] == ["Wall A"]     # kept as written...
+    assert any(isinstance(c, str) and "contradictory unit labels" in c and "Wall A" in c
+               for c in conflicts)                       # ...but flagged for a human
+
+
+def test_parse_panels_dedupes_on_normalized_name():
+    # 'Wall A' / 'WALL A' are ONE panel; the second size is a conflict, not a twin
+    panels, conflicts = intake.parse_panels("Wall A: 10 x 20\nWALL A: 12 x 20\n")
+    assert panels == [{"name": "Wall A", "w": 10.0, "h": 20.0}]
+    assert conflicts == [("Wall A", (10.0, 20.0), (12.0, 20.0))]
+    # same size under a different casing -> silently one panel
+    panels2, conflicts2 = intake.parse_panels("Wall A: 10 x 20\nWALL A: 10 x 20\n")
+    assert len(panels2) == 1 and conflicts2 == []
+
+
+def test_main_ocr_conflicts_reach_the_review(monkeypatch, tmp_path):
+    # a graphic key OCR'd with the same label at two sizes must surface in the
+    # review file, not be discarded by the OCR branch
+    monkeypatch.chdir(tmp_path)
+    _blank_pdf(tmp_path / "deck.pdf")                    # no text -> OCR branch
+    monkeypatch.setattr(intake, "ocr_pages",
+                        lambda *a, **k: ('C 10"w x 20"h\nC 12"w x 20"h\n', []))
+    monkeypatch.setattr(intake.sys, "argv", ["intake.py", "deck.pdf", "--job", "OCR Job"])
+    intake.main()
+    spec = json.load(open("booth_spec_OCR_Job_DRAFT.json"))
+    assert [p["name"] for p in spec["panels"]] == ["C"]
+    assert spec["_intake"]["conflicts"] == [{"name": "C", "a": [10.0, 20.0], "b": [12.0, 20.0]}]
+    review = open("OCR_Job_intake_review.md").read()
+    assert "Dimension conflicts" in review and "10.0x20.0 vs 12.0x20.0" in review
 
 
 # ---------- P1-1: gs/tesseract hygiene - checked results, temp dirs, warnings ----------

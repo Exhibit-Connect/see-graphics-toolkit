@@ -47,11 +47,13 @@ DOOR_STD = {"panel_w_in": 39.125, "panel_h_in": 95.21, "edge_offset_in": 4.3125,
             "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
             "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79}}
 
-# "Name: 78.12" x 173.32""  (overview list) - the most reliable source
+# "Name: 78.12" x 173.32""  (overview list) - the most reliable source.
+# Captures the optional unit letter on BOTH numbers ('96"h x 48"w' is
+# height-first - discarding the letters used to transpose those dims).
 PANEL_RE = re.compile(
     r'^[ \t]*([A-Za-z][A-Za-z0-9 ._/&-]*?)[ \t]*:[ \t]*'
-    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*[wWhHdD]?[ \t]*[xX][ \t]*'
-    r'([0-9]+(?:\.[0-9]+)?)', re.M)
+    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*([wWhHdD])?[ \t]*[xX][ \t]*'
+    r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”\'’]?[ \t]*([wWhHdD])?', re.M)
 # "Full Scale Trim: 78.12in w x 173.32in h" (per-wall confirmation)
 FULLSCALE_RE = re.compile(r'Full Scale Trim:?\s*([0-9.]+)\s*in\s*w\s*x\s*([0-9.]+)\s*in\s*h', re.I)
 # bare "39.06" x 134.26"" dims (e.g. the fridge-fabric note)
@@ -92,21 +94,34 @@ def read_pdf_text(path):
 
 
 def parse_panels(text):
+    """Panels from overview lines ('Name: W x H'). Returns (panels, conflicts).
+    Conflict entries are (name, (w,h), (w,h)) tuples for two-sizes disagreements
+    or plain strings for parsing notes (e.g. contradictory unit labels). Panels
+    are deduped on norm_name so 'Wall A'/'WALL A' is ONE panel (first-seen
+    display name kept); a repeat at a different size is a conflict, not a
+    second panel. '96\"h x 48\"w' honors the unit letters (w=48, h=96)."""
     found, order, conflicts = {}, [], []
     for m in PANEL_RE.finditer(text):
         name = re.sub(r"\s+", " ", m.group(1)).strip()
         if name.lower() in BLOCK or len(name) > 32:
             continue
-        w, h = float(m.group(2)), float(m.group(3))
+        w, h = float(m.group(2)), float(m.group(4))
+        u1, u2 = (m.group(3) or "").lower(), (m.group(5) or "").lower()
+        if u1 == "h" and u2 == "w":
+            w, h = h, w
+        elif u1 and u1 == u2 and u1 in ("w", "h"):
+            conflicts.append(f"{name}: contradictory unit labels (both marked '{u1}') — "
+                             f"kept {w} x {h} as written; confirm which is width")
         if not (1 <= w <= 600 and 1 <= h <= 600):
             continue
-        if name in found:
-            if found[name] != (w, h):
-                conflicts.append((name, found[name], (w, h)))
+        key = norm_name(name)
+        if key in found:
+            if found[key][1] != (w, h):
+                conflicts.append((found[key][0], found[key][1], (w, h)))
             continue
-        found[name] = (w, h)
-        order.append(name)
-    return [{"name": n, "w": found[n][0], "h": found[n][1]} for n in order], conflicts
+        found[key] = (name, (w, h))
+        order.append(key)
+    return [{"name": found[k][0], "w": found[k][1][0], "h": found[k][1][1]} for k in order], conflicts
 
 
 # "Graphic Key" table rows: `C 107.325"w x 153.8125"h`, `H1-H2 39.0625"w x 153.8125"h`.
@@ -117,24 +132,55 @@ KEY_RE = re.compile(
     r'([0-9]+(?:\.[0-9]+)?)[ \t]*["”]?[ \t]*[hH]', re.M)
 
 
+def _expand_range_label(label):
+    """Expand a graphic-key range label into every panel it names.
+    Returns (names, note): 'H1-H4' -> [H1,H2,H3,H4] (a split on '-' used to
+    keep only the endpoints, silently dropping H2/H3 from the draft); 'C-E' ->
+    [C,D,E]. An unexpandable mixed form keeps both endpoints and returns a
+    review note so a human checks for panels in between. Pure."""
+    if "-" not in label:
+        return [label.strip()], None
+    a, b = (p.strip() for p in re.split(r"\s*-\s*", label, maxsplit=1))
+    ma, mb = re.match(r"^([A-Za-z]*)(\d+)$", a), re.match(r"^([A-Za-z]*)(\d+)$", b)
+    if ma and mb and mb.group(1) in (ma.group(1), ""):     # H1-H4 or H1-4
+        lo, hi = int(ma.group(2)), int(mb.group(2))
+        if lo <= hi <= lo + 100:
+            pad = len(ma.group(2)) if ma.group(2).startswith("0") else 0
+            return [f"{ma.group(1)}{str(i).zfill(pad)}" for i in range(lo, hi + 1)], None
+    if len(a) == 1 and len(b) == 1 and a.isalpha() and b.isalpha() and ord(a) <= ord(b):
+        return [chr(i) for i in range(ord(a), ord(b) + 1)], None   # C-E -> C,D,E
+    return [a, b], (f"range '{label}' could not be fully expanded — kept only the endpoints "
+                    f"{a} and {b}; check the key for panels between them")
+
+
 def parse_graphic_key(text):
     """Parse a 'Graphic Key' table (label + W\"w x H\"h) — how real handoffs print
     per-graphic sizes on the floor plan, recovered via OCR. Expands ranges like
-    'H1-H2' or 'C-D' into individual panels sharing that size. Returns
-    [{name,w,h}, ...] in order, deduped. Deterministic + pure (same text in -> same
-    panels out), which is the whole point: no run-to-run variance."""
-    found, order = {}, []
+    'H1-H4' or 'C-E' into the FULL run of panels sharing that size. Returns
+    (panels, conflicts) — same shapes as parse_panels: panels deduped on
+    norm_name in order; a repeated label at a different size is a conflict
+    tuple, an unexpandable range a conflict note string. Deterministic + pure
+    (same text in -> same panels out), which is the whole point: no run-to-run
+    variance."""
+    found, order, conflicts = {}, [], []
     for m in KEY_RE.finditer(text):
         w, h = float(m.group(2)), float(m.group(3))
         if not (1 <= w <= 600 and 1 <= h <= 600):
             continue
-        label = m.group(1)
-        parts = [p.strip() for p in re.split(r"\s*-\s*", label)] if "-" in label else [label.strip()]
-        for name in parts:
-            if name and name not in found:
-                found[name] = (w, h)
-                order.append(name)
-    return [{"name": n, "w": found[n][0], "h": found[n][1]} for n in order]
+        names, note = _expand_range_label(m.group(1))
+        if note:
+            conflicts.append(note)
+        for name in names:
+            if not name:
+                continue
+            key = norm_name(name)
+            if key in found:
+                if found[key][1] != (w, h):
+                    conflicts.append((found[key][0], found[key][1], (w, h)))
+                continue
+            found[key] = (name, (w, h))
+            order.append(key)
+    return [{"name": found[k][0], "w": found[k][1][0], "h": found[k][1][1]} for k in order], conflicts
 
 
 # Render DPIs. High enough that fine printed dimension labels (e.g. 39.0625") are
@@ -425,9 +471,13 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
     for t in todo:
         lines.append(f"- [ ] {t}")
     if conflicts:
-        lines += ["", "### ⚠ Dimension conflicts (same panel, two sizes)"]
-        for n, a, b in conflicts:
-            lines.append(f"- **{n}**: {a[0]}x{a[1]} vs {b[0]}x{b[1]} — pick one")
+        lines += ["", "### ⚠ Dimension conflicts (same panel, two sizes) / parsing notes"]
+        for c in conflicts:
+            if isinstance(c, str):
+                lines.append(f"- {c}")
+            else:
+                n, a, b = c
+                lines.append(f"- **{n}**: {a[0]}x{a[1]} vs {b[0]}x{b[1]} — pick one")
     if extras:
         lines += ["", "### Notes pulled from the package"]
         for e in extras:
@@ -514,12 +564,17 @@ def main():
         # Visual handoff (no extractable text). Prefer DETERMINISTIC OCR of the graphic
         # key — same image -> same panels every run — and fall back to the AI vision pass
         # only if OCR recovers nothing. Either way the panels stay needs_confirm.
-        ocr_panels = []
+        ocr_panels, ocr_conflicts = [], []
         ocr_text, ocr_warnings = ocr_pages(src, n, max_pages)
         warnings += ocr_warnings
         if ocr_text:
-            ocr_panels = parse_graphic_key(ocr_text) or parse_panels(ocr_text)[0]
+            ocr_panels, ocr_conflicts = parse_graphic_key(ocr_text)
+            if not ocr_panels:
+                ocr_panels, ocr_conflicts = parse_panels(ocr_text)
         if ocr_panels:
+            # keep what the producing parser flagged + cross-check the OCR text's
+            # per-wall pages, exactly like the text pass (conflicts were discarded here)
+            conflicts += ocr_conflicts + reconcile(ocr_panels, ocr_text)
             spec_panels = [dict(name=p["name"], w=p["w"], h=p["h"], finish="TBD", sided="single",
                                 needs_confirm=True, _source="OCR of graphic key (CONFIRM label + size)")
                            for p in ocr_panels]
@@ -545,7 +600,8 @@ def main():
         "_intake": {"source": os.path.basename(src), "pages": n, "panel_source": panel_source,
                     "panels_found_text": len(panels), "panels_in_draft": len(spec_panels),
                     "ai_undimensioned": undimensioned, "fullscale_confirms": len(fullscale),
-                    "conflicts": [{"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
+                    "conflicts": [{"note": c} if isinstance(c, str) else
+                                  {"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
                     "notes": extras, "warnings": warnings, "ai": ai},
     }
     base = re.sub(r"[^A-Za-z0-9]+", "_", job).strip("_")
@@ -567,7 +623,8 @@ def main():
     else:
         print(f"Panels found (text pass): {len(panels)}  ->  " + ", ".join(p['name'] for p in panels))
     if conflicts:
-        print(f"  ⚠ {len(conflicts)} dimension conflict(s): " + "; ".join(f"{c[0]} {c[1]}!={c[2]}" for c in conflicts))
+        print(f"  ⚠ {len(conflicts)} dimension conflict(s)/note(s): "
+              + "; ".join(c if isinstance(c, str) else f"{c[0]} {c[1]}!={c[2]}" for c in conflicts))
     for w in warnings:
         print(f"  ⚠ tool warning: {w}")
     if ai:

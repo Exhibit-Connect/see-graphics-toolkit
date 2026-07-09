@@ -617,8 +617,11 @@ def main():
 
     if render.html_to_pdf(html_path, pdf_path):
         print("PDF: ", pdf_path, f"({os.path.getsize(pdf_path)} bytes)")
+    elif os.path.exists(render.CHROME):
+        print("PDF render FAILED or timed out (see the render error above) — "
+              "open the HTML and Print -> Save as PDF.")
     else:
-        print("PDF step skipped — open the HTML and Print -> Save as PDF.")
+        print("PDF step skipped (Chrome not installed) — open the HTML and Print -> Save as PDF.")
 
 
 if __name__ == "__main__":

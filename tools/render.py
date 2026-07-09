@@ -2,21 +2,139 @@
 """
 Shared HTML->PDF rendering via headless Google Chrome.
 
-ONE source for the poll-then-terminate logic every SEE document generator uses
+ONE source for the run-and-verify logic every SEE document generator uses
 (client spec sheet, artwork check report, proof, job dashboard, client
-templates). Some Chrome builds write the PDF but never exit, so we poll for the
-output file and then ALWAYS terminate Chrome — the call can't hang. Mac-centric
-(uses the Google Chrome app bundle); returns False if Chrome isn't installed so
+templates). Some Chrome builds write the output but never exit, so we poll for
+the output file and then ALWAYS terminate Chrome — the call can't hang.
+Success is verified, not assumed: the process must exit 0 with a real output
+file (or the file must be present and size-stable while Chrome lingers), the
+output must be structurally complete (PDF %%EOF / PNG IEND), and a PDF that is
+actually Chrome's own error page ("This site can't be reached" / ERR_*) is
+rejected — those used to ship as client-facing documents. Mac-centric (uses
+the Google Chrome app bundle); returns False if Chrome isn't installed so
 callers fall back to "open the HTML and Print -> Save as PDF".
+
+The render timeout is env-overridable via SEE_RENDER_TIMEOUT (seconds,
+default 60 — image-heavy proofs can exceed the old 20s budget).
 """
-import os, re, subprocess, tempfile, shutil, time
+import os, pathlib, re, subprocess, sys, tempfile, shutil, time
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+DEFAULT_TIMEOUT_S = 60.0
+MIN_BYTES = 1500          # anything smaller is a stub, not a real document
 
 
-def html_to_pdf(html_path, pdf_path):
-    """Render html_path -> pdf_path with headless Chrome. Returns True if a
-    non-trivial PDF was produced. Never hangs (polls, then always terminates)."""
+def _timeout_s():
+    try:
+        return float(os.environ.get("SEE_RENDER_TIMEOUT", "") or DEFAULT_TIMEOUT_S)
+    except ValueError:
+        return DEFAULT_TIMEOUT_S
+
+
+def file_uri(path):
+    """A correctly percent-encoded, absolute file:// URL for a local path.
+    The old f"file://{path}" was neither absolute nor encoded, so a '#' or '%'
+    in a client artwork's filename made Chrome print its ERROR PAGE to the
+    output — which then shipped as the 'report'."""
+    return pathlib.Path(path).resolve().as_uri()
+
+
+def pdf_complete(path):
+    """True if the file ends like a whole PDF (%%EOF within the last 1KB)."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 1024))
+            return b"%%EOF" in f.read()
+    except OSError:
+        return False
+
+
+def png_complete(path):
+    """True if the file ends with PNG's IEND chunk (a truncated write doesn't)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - 12))
+            return f.read().endswith(b"IEND\xaeB\x60\x82")
+    except OSError:
+        return False
+
+
+def looks_like_chrome_error_page(pdf_path):
+    """True if the 'rendered' PDF is actually Chrome's own error page (e.g.
+    ERR_INVALID_URL / ERR_FILE_NOT_FOUND printed to PDF). Both corrupted PDFs
+    committed under docs/ were exactly this. Needs pypdf; when pypdf is absent
+    or the text can't be extracted the check is skipped (returns False)."""
+    try:
+        from pypdf import PdfReader
+        txt = PdfReader(pdf_path).pages[0].extract_text() or ""
+    except Exception:
+        return False
+    return ("ERR_" in txt) or ("This site can" in txt)
+
+
+def _pdf_ok(path):
+    return pdf_complete(path) and not looks_like_chrome_error_page(path)
+
+
+def _run_chrome(args, out_path, complete_predicate, runner=subprocess.Popen):
+    """Run a headless-Chrome command that should produce `out_path`; verify it.
+
+    Success requires EITHER the process to have exited with returncode 0 and a
+    real (> MIN_BYTES) output file, OR — for Chrome builds that write the file
+    but never exit — the output to exist with a nonzero size that is stable
+    across two consecutive 0.5s polls. Either way the output must then pass
+    `complete_predicate` (structural completeness / not-an-error-page). The
+    process is ALWAYS terminated (can't hang); on failure one line with the
+    returncode and the tail of Chrome's stderr goes to stderr. `runner` is
+    injectable for tests (no Chrome needed)."""
+    proc = runner(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + _timeout_s()
+    ok = False
+    prev_size = None
+    while True:
+        rc = proc.poll()
+        if rc is not None:
+            ok = (rc == 0 and os.path.exists(out_path)
+                  and os.path.getsize(out_path) > MIN_BYTES)
+            break
+        size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+        if size > 0 and size == prev_size:
+            ok = True          # never-exiting Chrome: output present and stable
+            break
+        prev_size = size if size > 0 else None
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+
+    stderr_tail = b""
+    try:
+        proc.terminate()
+        try:
+            _, err = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            _, err = proc.communicate()
+        stderr_tail = err or b""
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    if ok and not complete_predicate(out_path):
+        ok = False
+    if not ok:
+        print(f"render: Chrome did not produce a valid {os.path.basename(out_path)} "
+              f"(returncode={proc.returncode}): "
+              f"{stderr_tail[-500:].decode('utf-8', 'replace').strip()}",
+              file=sys.stderr)
+    return ok
+
+
+def html_to_pdf(html_path, pdf_path, runner=subprocess.Popen):
+    """Render html_path -> pdf_path with headless Chrome. Returns True only if
+    a complete, non-error-page PDF was produced. Never hangs."""
     if not os.path.exists(CHROME):
         return False
     try:
@@ -24,27 +142,14 @@ def html_to_pdf(html_path, pdf_path):
     except OSError:
         pass
     prof = tempfile.mkdtemp(prefix="see_chrome_")
-    proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-                             "--no-pdf-header-footer", "--virtual-time-budget=2000",
-                             f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}", f"file://{html_path}"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ok = False
-    for _ in range(40):  # up to ~20s
-        time.sleep(0.5)
-        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500:
-            ok = True
-            break
-        if proc.poll() is not None:
-            break
     try:
-        proc.terminate(); proc.wait(timeout=3)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    shutil.rmtree(prof, ignore_errors=True)
-    return ok or (os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1500)
+        return _run_chrome([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+                            "--no-pdf-header-footer", "--virtual-time-budget=2000",
+                            f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}",
+                            file_uri(html_path)],
+                           pdf_path, _pdf_ok, runner=runner)
+    finally:
+        shutil.rmtree(prof, ignore_errors=True)
 
 
 def svg_px_size_from_text(svg_text, default=(1600, 900)):
@@ -61,11 +166,11 @@ def svg_px_size_from_text(svg_text, default=(1600, 900)):
     return default
 
 
-def svg_to_png(svg_path, png_path, scale=2):
+def svg_to_png(svg_path, png_path, scale=2, runner=subprocess.Popen):
     """Rasterize an SVG to PNG via headless Chrome, sized to the SVG's OWN
     aspect ratio (qlmanage force-fits a square canvas and crops wide art). `scale`
-    is the device pixel ratio for crispness. Returns True on success, False if
-    Chrome is unavailable (callers can fall back). Poll-then-terminate, can't hang."""
+    is the device pixel ratio for crispness. Returns True only on a verified,
+    complete PNG; False if Chrome is unavailable (callers can fall back)."""
     if not os.path.exists(CHROME):
         return False
     try:
@@ -77,25 +182,11 @@ def svg_to_png(svg_path, png_path, scale=2):
     except OSError:
         pass
     prof = tempfile.mkdtemp(prefix="see_chrome_")
-    proc = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-                             "--hide-scrollbars", f"--force-device-scale-factor={scale}",
-                             f"--window-size={w},{h}", f"--user-data-dir={prof}",
-                             f"--screenshot={png_path}", f"file://{os.path.abspath(svg_path)}"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ok = False
-    for _ in range(40):  # up to ~20s
-        time.sleep(0.5)
-        if os.path.exists(png_path) and os.path.getsize(png_path) > 1500:
-            ok = True
-            break
-        if proc.poll() is not None:
-            break
     try:
-        proc.terminate(); proc.wait(timeout=3)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    shutil.rmtree(prof, ignore_errors=True)
-    return ok or (os.path.exists(png_path) and os.path.getsize(png_path) > 1500)
+        return _run_chrome([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
+                            "--hide-scrollbars", f"--force-device-scale-factor={scale}",
+                            f"--window-size={w},{h}", f"--user-data-dir={prof}",
+                            f"--screenshot={png_path}", file_uri(svg_path)],
+                           png_path, png_complete, runner=runner)
+    finally:
+        shutil.rmtree(prof, ignore_errors=True)

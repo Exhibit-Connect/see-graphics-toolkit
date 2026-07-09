@@ -60,16 +60,20 @@ Check it: `python3 tools/ai_client.py --check`. Without a key, the AI step write
 
 ## Requirements
 - Adobe Illustrator (for the `.jsx` template generator)
-- Python 3 with `pypdf`, `Pillow`, `openpyxl`
+- Python 3 with the pinned runtime deps (`pypdf`, `Pillow`, `openpyxl`):
+  ```sh
+  pip install -r requirements.txt
+  ```
 - Ghostscript and Google Chrome (used to render the PDFs)
 
 ## Running tests
-A small pytest suite covers the offline parsing/check helpers in `intake.py` and `proofer.py`.
+The pytest suite covers the parsing/check helpers, the PDF-analysis path, the
+approval gate, and the proof-log round-trip — no Chrome/Ghostscript needed.
 ```sh
-pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt   # runtime pins + pytest
 pytest
 ```
-Run it after editing those scripts to catch regressions before shipping.
+Run it after editing the scripts to catch regressions before shipping.
 
 ## Not included (by design)
 Client artwork, the proprietary door-template `.ai` files, and internal SEE documents are kept out

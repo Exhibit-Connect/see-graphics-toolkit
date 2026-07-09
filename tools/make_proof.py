@@ -32,16 +32,17 @@ Usage:
 Exit codes: 0 = success; 1 = refusal (approval gate) or skipped files without
 --allow-skips; 2 = usage error / unreadable input / no panel match.
 """
-import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, functools, tempfile
+import sys, os, re, json, csv, glob, base64, subprocess, datetime, html, tempfile
 import argparse
 import fcntl, time
 import proofer
+import branding
 try:
     import openpyxl
 except Exception:
     openpyxl = None
 
-RED = proofer.branding.RED
+RED = branding.RED
 LOG = "proof_log.xlsx"                    # basename - resolve via default_log_path()
 LOG_ENV = "SEE_PROOF_LOG"                 # overrides the log location
 FALLBACK_CSV = "proof_log_fallback.csv"   # written when the xlsx can't be
@@ -91,10 +92,11 @@ class _FileLock:
             fcntl.flock(self.f, fcntl.LOCK_UN)
         finally:
             self.f.close()
-VCOL = {"PASS": "#2E9E40", "REVIEW": "#F7941E", "FAIL": RED}
+# verdict badge colors come from the one check-status palette in proofer.BADGE
+# (P3-3: the values were hand-duplicated here and could drift)
+VCOL = {k: proofer.BADGE[k] for k in ("PASS", "REVIEW", "FAIL")}
 VLABEL = {"PASS": "PASS", "REVIEW": "NEEDS REVIEW", "FAIL": "FAIL"}
-CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas | Atlanta | NJ/NY | Dallas "
-           "&nbsp;·&nbsp; SouthEastExhibit.com")
+CONTACT = branding.CONTACT
 DISCLAIMER = ("This proof is for verifying CONTENT, LAYOUT, COLOR BREAK and SIZE only. On-screen color is "
               "not an exact match to the final printed piece. Check spelling, dimensions and finish "
               "carefully — your approval releases this file to print.")
@@ -242,23 +244,10 @@ def b64img(p):
     return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode() if p else ""
 
 
-@functools.lru_cache(maxsize=1)
-def _logo_data_uri():
-    """Find the SEE logo PNG and return it as a data URI, else '' (the proof
-    falls back to a text wordmark). Looks in assets/ next to the tools/ dir, the
-    repo root, and cwd - so it works regardless of where the tool is run."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    seen = []
-    for d in (os.path.join(here, "..", "assets"), os.path.join(os.getcwd(), "assets"),
-              here, os.path.join(here, ".."), os.getcwd()):
-        seen += sorted(glob.glob(os.path.join(d, "see_logo.png")))
-        seen += sorted(glob.glob(os.path.join(d, "*[Ll]ogo*.png")))
-    for p in seen:
-        try:
-            return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode()
-        except OSError:
-            continue
-    return ""
+# P3-3: one logo lookup for every generated document — branding.logo_data_uri
+# (which searches only the canonical assets/see_logo.png locations, never a
+# cwd wildcard that could embed a client's own logo file).
+_logo_data_uri = branding.logo_data_uri
 
 
 def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, approver,
@@ -305,70 +294,70 @@ def log_proof(job, job_no, panel, fname, verdict, status, version, prepped, qc, 
         return f"{csv_path} (xlsx unavailable: {xlsx_err})"
 
 
-CSS_PROOF = """
-  @page { size: letter portrait; margin: 0.5in; }
-  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#1a1a1a; font-size:12px; margin:0; }
-  .page { page-break-after: always; }
-  .page:last-child { page-break-after: auto; }
-  .pill { background:#E31D3D; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }
-  h1 { font-size:19px; margin:9px 0 1px; }
-  .meta { color:#555; font-size:11px; margin:1px 0 0; }
-  .verdict { display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }
-  .legend { font-size:10px; color:#666; margin-left:8px; }
-  .legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }
-  .banner { margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
-            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }
-  .caution { margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid #E31D3D; border-left:6px solid #E31D3D;
-             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }
-  .cols { display:flex; gap:15px; margin-top:6px; }
-  .art { flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }
-  .art img { max-width:100%; max-height:330px; }
-  .noimg { color:#999; padding:40px 0; }
-  .right { flex:1; }
-  .blk { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#888; font-weight:700; margin:0 0 4px; }
-  table { width:100%; border-collapse:collapse; }
-  table.spec { margin-bottom:13px; }
-  table.spec td { padding:4px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }
-  td.sl { color:#666; width:42%; }
-  td.sv { font-weight:700; }
-  table.chk th { background:#f3f3f3; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; font-size:9.5px; text-transform:uppercase; }
-  table.chk td { padding:5px 8px; border-bottom:1px solid #ececec; vertical-align:top; }
-  td.ck { font-weight:700; width:20%; }
-  .b { color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }
-  .msg { font-size:10px; }
-  ol.fixlist { margin:7px 0 0; padding-left:18px; }
-  ol.fixlist li { font-size:10px; margin:3px 0; color:#7a4a00; }
-  .signbox { margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }
-  .sign .st { font-weight:700; color:#E31D3D; margin-bottom:7px; }
-  .sign .opt { margin-bottom:5px; font-size:12px; }
-  .sign .lines { margin:11px 0 9px; }
-  .sign .chg { color:#555; }
-  .stamp { display:inline-block; border:3px solid #2E9E40; color:#2E9E40; font-weight:800; font-size:17px; padding:7px 16px; border-radius:8px; letter-spacing:.04em; }
-  .locknote { color:#7a0d12; font-size:11px; margin-top:8px; }
-  footer { margin-top:14px; border-top:1px solid #ddd; padding-top:7px; }
-  .ftgrid { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:10px; }
-  .ftgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
-  .ftgrid div b { font-size:11px; }
-  .contact { color:#999; font-size:9px; margin-top:7px; }
+CSS_PROOF = f"""
+  @page {{ size: letter portrait; margin: 0.5in; }}
+  body {{ font-family: {branding.FONT_STACK}; color:#1a1a1a; font-size:12px; margin:0; }}
+  .page {{ page-break-after: always; }}
+  .page:last-child {{ page-break-after: auto; }}
+  .pill {{ background:{RED}; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }}
+  h1 {{ font-size:19px; margin:9px 0 1px; }}
+  .meta {{ color:#555; font-size:11px; margin:1px 0 0; }}
+  .verdict {{ display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }}
+  .legend {{ font-size:10px; color:#666; margin-left:8px; }}
+  .legend .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }}
+  .banner {{ margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
+            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }}
+  .caution {{ margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid {RED}; border-left:6px solid {RED};
+             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }}
+  .cols {{ display:flex; gap:15px; margin-top:6px; }}
+  .art {{ flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }}
+  .art img {{ max-width:100%; max-height:330px; }}
+  .noimg {{ color:#999; padding:40px 0; }}
+  .right {{ flex:1; }}
+  .blk {{ font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#888; font-weight:700; margin:0 0 4px; }}
+  table {{ width:100%; border-collapse:collapse; }}
+  table.spec {{ margin-bottom:13px; }}
+  table.spec td {{ padding:4px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }}
+  td.sl {{ color:#666; width:42%; }}
+  td.sv {{ font-weight:700; }}
+  table.chk th {{ background:#f3f3f3; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; font-size:9.5px; text-transform:uppercase; }}
+  table.chk td {{ padding:5px 8px; border-bottom:1px solid #ececec; vertical-align:top; }}
+  td.ck {{ font-weight:700; width:20%; }}
+  .b {{ color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }}
+  .msg {{ font-size:10px; }}
+  ol.fixlist {{ margin:7px 0 0; padding-left:18px; }}
+  ol.fixlist li {{ font-size:10px; margin:3px 0; color:#7a4a00; }}
+  .signbox {{ margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }}
+  .sign .st {{ font-weight:700; color:{RED}; margin-bottom:7px; }}
+  .sign .opt {{ margin-bottom:5px; font-size:12px; }}
+  .sign .lines {{ margin:11px 0 9px; }}
+  .sign .chg {{ color:#555; }}
+  .stamp {{ display:inline-block; border:3px solid #2E9E40; color:#2E9E40; font-weight:800; font-size:17px; padding:7px 16px; border-radius:8px; letter-spacing:.04em; }}
+  .locknote {{ color:#7a0d12; font-size:11px; margin-top:8px; }}
+  footer {{ margin-top:14px; border-top:1px solid #ddd; padding-top:7px; }}
+  .ftgrid {{ display:flex; flex-wrap:wrap; gap:6px 18px; font-size:10px; }}
+  .ftgrid div span {{ display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }}
+  .ftgrid div b {{ font-size:11px; }}
+  .contact {{ color:#999; font-size:9px; margin-top:7px; }}
   /* cover */
-  .brandrow { display:flex; justify-content:space-between; align-items:center; }
-  .wordmark { font-size:18px; font-weight:800; color:#E31D3D; letter-spacing:.01em; }
-  .logo { height:56px; width:auto; display:block; margin-bottom:4px; }
-  .logosm { height:30px; width:auto; }
-  .phead { display:flex; justify-content:space-between; align-items:center; }
-  .coverhead { color:#999; font-size:9px; margin-top:2px; }
-  h1.cv { font-size:23px; margin:16px 0 2px; }
-  .jobgrid { display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }
-  .jobgrid div span { display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }
-  .jobgrid div b { font-size:12.5px; }
-  .totals { margin:14px 0 6px; font-size:13px; }
-  .totals b { color:#E31D3D; }
-  table.summary th { background:#E31D3D; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }
-  table.summary td { padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }
-  table.summary tr:nth-child(even) td { background:#fafafa; }
-  table.summary .muted { color:#c0392b; font-weight:700; }
-  .howto { margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }
-  .howto b { color:#E31D3D; }
+  .brandrow {{ display:flex; justify-content:space-between; align-items:center; }}
+  .wordmark {{ font-size:18px; font-weight:800; color:{RED}; letter-spacing:.01em; }}
+  .logo {{ height:56px; width:auto; display:block; margin-bottom:4px; }}
+  .logosm {{ height:30px; width:auto; }}
+  .phead {{ display:flex; justify-content:space-between; align-items:center; }}
+  .coverhead {{ color:#999; font-size:9px; margin-top:2px; }}
+  h1.cv {{ font-size:23px; margin:16px 0 2px; }}
+  .jobgrid {{ display:flex; flex-wrap:wrap; gap:7px 26px; margin:10px 0 4px; }}
+  .jobgrid div span {{ display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }}
+  .jobgrid div b {{ font-size:12.5px; }}
+  .totals {{ margin:14px 0 6px; font-size:13px; }}
+  .totals b {{ color:{RED}; }}
+  table.summary th {{ background:{RED}; color:#fff; text-align:left; padding:7px 9px; font-size:10px; text-transform:uppercase; }}
+  table.summary td {{ padding:6px 9px; border-bottom:1px solid #eaeaea; font-size:11px; }}
+  table.summary tr:nth-child(even) td {{ background:#fafafa; }}
+  table.summary .muted {{ color:#c0392b; font-weight:700; }}
+  .howto {{ margin-top:15px; border:1px solid #ddd; border-radius:7px; padding:11px 14px; background:#f7f9fb; font-size:11px; line-height:1.5; }}
+  .howto b {{ color:{RED}; }}
 """
 
 HEAD = '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF + '</style></head><body>'

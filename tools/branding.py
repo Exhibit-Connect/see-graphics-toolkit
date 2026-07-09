@@ -7,7 +7,7 @@ sheet, the artwork check report, and the proof all carry IDENTICAL branding.
 Swap assets/see_logo.png (e.g. for Marc's official file) and every output
 that uses this module updates at once.
 """
-import os, glob, base64, functools
+import os, base64, functools
 
 # Official SEE brand red, sampled from the 2025 brand sources (SE_2025_Client_Presentation /
 # SE_Artwork_Guidelines — the red title pills and headings all render as rgb(227,29,61)).
@@ -22,19 +22,20 @@ CONTACT = ("Southeast Exhibits &amp; Events &nbsp;·&nbsp; Orlando | Las Vegas |
 @functools.lru_cache(maxsize=1)
 def logo_data_uri():
     """The SEE logo PNG as a data: URI, or '' if not found (callers fall back
-    to a text wordmark). Looks in assets/ next to tools/, the repo root, and
-    cwd, so it works regardless of where a tool is run."""
+    to a text wordmark). Searches ONLY the canonical brand filenames
+    (assets/see_logo.png, assets/SEE_logo.png) in the two assets/ locations —
+    next to tools/, and under cwd (same rule as brand_page_data_uri). The old
+    wildcard `*[Ll]ogo*.png` glob over cwd / the repo root could pick up a
+    client's own logo file (e.g. Client_Logo.png in a job folder) and embed
+    it as SEE's brand mark on a client-facing document."""
     here = os.path.dirname(os.path.abspath(__file__))
-    seen = []
-    for d in (os.path.join(here, "..", "assets"), os.path.join(os.getcwd(), "assets"),
-              here, os.path.join(here, ".."), os.getcwd()):
-        seen += sorted(glob.glob(os.path.join(d, "see_logo.png")))
-        seen += sorted(glob.glob(os.path.join(d, "*[Ll]ogo*.png")))
-    for p in seen:
-        try:
-            return "data:image/png;base64," + base64.b64encode(open(p, "rb").read()).decode()
-        except OSError:
-            continue
+    for d in (os.path.join(here, "..", "assets"), os.path.join(os.getcwd(), "assets")):
+        for name in ("see_logo.png", "SEE_logo.png"):
+            try:
+                with open(os.path.join(d, name), "rb") as f:
+                    return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+            except OSError:
+                continue
     return ""
 
 

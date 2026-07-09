@@ -11,9 +11,11 @@ so you (or a client / leadership) can eyeball the layout without opening AI.
 Usage:
     python3 tools/preview_templates.py [booth_spec.json] [--out BASE]
 
-Outputs BASE.svg (always) and BASE.png (via macOS qlmanage when available).
+Outputs BASE.svg (always) and BASE.png (headless Chrome when available;
+falls back to macOS qlmanage, which force-fits a square canvas and may CROP
+very wide booths — a cropped result is detected and flagged).
 """
-import json, sys, os, glob, math, subprocess, tempfile, shutil, html
+import json, struct, sys, os, glob, math, subprocess, tempfile, shutil, html
 import render
 import spec_validate
 
@@ -87,7 +89,9 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
     for z in panel.get("zones", []):
         col = C["live"] if z.get("kind") == "live" else C["keep"]
         rx, ry = tlx + z["x"] * px, tty + (h - z["y"] - z["h"]) * px
-        o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}22" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
+        # fill-opacity, not 8-digit hex alpha ('{col}22'): the latter is invalid
+        # in strict SVG 1.1 viewers (black boxes in Illustrator import/older librsvg)
+        o.append(f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{z["w"]*px:.1f}" height="{z["h"]*px:.1f}" fill="{col}" fill-opacity="0.13" stroke="{col}" stroke-width="1.6" stroke-dasharray="6 4"/>')
         tag = "LIVE" if z.get("kind") == "live" else "keep clear"
         o.append(f'<text x="{rx+4:.1f}" y="{ry+13:.1f}" font-size="8.5" font-weight="700" fill="{col}">{esc(tag)}</text>')
     # The .jsx production generator falls back to its built-in door when the spec
@@ -207,22 +211,72 @@ def build_svg(spec):
     return "\n".join(o), len(panels)
 
 
+def png_px_size(png_path):
+    """(width, height) from a PNG's IHDR chunk, or None when the file isn't a
+    readable PNG. Pure byte-peek (no PIL needed)."""
+    try:
+        with open(png_path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    w, h = struct.unpack(">II", head[16:24])
+    return (w, h) if (w and h) else None
+
+
+def _aspect_mismatch(svg_path, png_path, tol=0.02):
+    """True when the produced PNG's aspect ratio is off the SVG's by more than
+    `tol` — the signature of qlmanage's force-fit square CROPPING a wide booth
+    (panels silently lost off the right edge)."""
+    png_wh = png_px_size(png_path)
+    if not png_wh:
+        return False  # can't tell - don't claim a crop we can't show
+    try:
+        svg_w, svg_h = render.svg_px_size_from_text(
+            open(svg_path, encoding="utf-8", errors="replace").read(4000))
+    except OSError:
+        return False
+    if not (svg_h and png_wh[1]):
+        return False
+    svg_aspect = svg_w / svg_h
+    png_aspect = png_wh[0] / png_wh[1]
+    return abs(png_aspect - svg_aspect) / svg_aspect > tol
+
+
 def render_png(svg_path, png_path, width=1600):
     """Rasterize the preview SVG to PNG. Primary path is the shared headless-Chrome
     renderer (render.svg_to_png), which sizes the canvas to the SVG's OWN aspect
-    ratio — qlmanage force-fit a square and cropped wide booths (a long back wall
-    lost panels off the right edge). Falls back to qlmanage only if Chrome is absent."""
+    ratio — qlmanage force-fits a square and has cropped wide booths (a long back
+    wall lost panels off the right edge). Falls back to qlmanage only if Chrome is
+    absent, and COMPARES the produced PNG's aspect to the SVG's so a cropped
+    result is flagged instead of silently presented as the booth.
+
+    Returns a truthy status naming the path taken — 'chrome', 'qlmanage', or
+    'qlmanage-cropped' (PNG exists but appears cropped) — or False when no PNG
+    could be produced."""
     if render.svg_to_png(svg_path, png_path):
-        return True
+        return "chrome"
     if shutil.which("qlmanage"):  # fallback (may crop very wide layouts)
         td = tempfile.mkdtemp()
-        subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path], capture_output=True)
+        p = subprocess.run(["qlmanage", "-t", "-s", str(width), "-o", td, svg_path],
+                           capture_output=True)
         produced = os.path.join(td, os.path.basename(svg_path) + ".png")
-        ok = os.path.exists(produced)
+        ok = p.returncode == 0 and os.path.exists(produced)
         if ok:
             shutil.move(produced, png_path)
+        else:
+            tail = (p.stderr or b"")[-300:].decode("utf-8", "replace").strip()
+            print(f"qlmanage failed (returncode={p.returncode}){': ' + tail if tail else ''}",
+                  file=sys.stderr)
         shutil.rmtree(td, ignore_errors=True)
-        return ok
+        if not ok:
+            return False
+        if _aspect_mismatch(svg_path, png_path):
+            print("PNG made via qlmanage and appears CROPPED (its aspect ratio does not "
+                  "match the SVG's) — use the SVG for the full booth", file=sys.stderr)
+            return "qlmanage-cropped"
+        return "qlmanage"
     return False
 
 
@@ -233,6 +287,10 @@ def main():
     i = 0
     while i < len(args):
         if args[i] == "--out":
+            if i + 1 >= len(args):   # trailing '--out' used to IndexError
+                print("usage: python3 tools/preview_templates.py [booth_spec.json] [--out BASE]",
+                      file=sys.stderr)
+                sys.exit(2)
             out_base = args[i + 1]; i += 2
         else:
             files.append(args[i]); i += 1
@@ -253,10 +311,15 @@ def main():
     open(svg_path, "w").write(svg)
     print(f"panels previewed: {n}")
     print("SVG:", svg_path)
-    if render_png(svg_path, png_path):
+    status = render_png(svg_path, png_path)
+    if status == "qlmanage-cropped":
+        print(f"PNG: {png_path} (qlmanage fallback — appears CROPPED, prefer the SVG)")
+    elif status:
         print("PNG:", png_path)
     else:
-        print("PNG: (qlmanage unavailable — open the SVG, or print it to an image)")
+        # blame whoever actually failed, not just qlmanage
+        print("PNG: not produced (Chrome and qlmanage both unavailable or failed) — "
+              "open the SVG in any browser, or print it to an image")
 
 
 if __name__ == "__main__":

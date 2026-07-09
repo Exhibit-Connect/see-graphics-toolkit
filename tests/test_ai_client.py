@@ -246,3 +246,45 @@ def test_cli_check_reports_key_source(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "API key set      : yes" in out
     assert "Key source" in out and ".openrouter_key" in out
+
+
+# ---------- P3-5: NDA upload gate + sanitized error bodies ----------
+def test_upload_allowed_defaults_true_and_honors_env(monkeypatch):
+    monkeypatch.delenv(ai_client.UPLOAD_ENV, raising=False)
+    assert ai_client.upload_allowed() is True
+    for v in ("0", "no", "false", "OFF"):
+        monkeypatch.setenv(ai_client.UPLOAD_ENV, v)
+        assert ai_client.upload_allowed() is False
+    monkeypatch.setenv(ai_client.UPLOAD_ENV, "1")
+    assert ai_client.upload_allowed() is True
+
+
+def test_ask_with_images_refused_when_upload_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv(ai_client.UPLOAD_ENV, "0")
+    img = tmp_path / "page.png"
+    img.write_bytes(b"png bytes")
+    called = []
+    opener = lambda req, timeout=None: called.append(1) or _Resp(_ok_body())
+    with pytest.raises(RuntimeError) as ei:
+        ai_client.ask("hi", [str(img)], opener=opener)
+    assert ai_client.UPLOAD_ENV in str(ei.value)
+    assert called == []                                # nothing left the machine
+    # a text-only call is NOT gated (no client imagery involved)
+    assert ai_client.ask("hi", opener=lambda req, timeout=None: _Resp(_ok_body("t"))) == "t"
+
+
+def test_http_error_message_is_one_capped_line_full_body_on_stderr(monkeypatch, capsys):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    big_body = ("<html>\n  <body>\n    upstream error   \n" + "x" * 300 + "\n</body></html>").encode()
+
+    def opener(req, timeout=None):
+        raise urllib.error.HTTPError("u", 401, "unauthorized", {}, io.BytesIO(big_body))
+
+    with pytest.raises(RuntimeError) as ei:
+        ai_client.ask("hi", opener=opener)
+    msg = str(ei.value)
+    assert "\n" not in msg and len(msg) <= len("OpenRouter HTTP 401: ") + 120
+    assert "upstream error" in msg
+    err = capsys.readouterr().err
+    assert "OpenRouter HTTP 401 response body" in err and "x" * 300 in err

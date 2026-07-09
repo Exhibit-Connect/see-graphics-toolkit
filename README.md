@@ -58,6 +58,25 @@ export OPENROUTER_MODEL="anthropic/claude-opus-4.8"   # default
 ```
 Check it: `python3 tools/ai_client.py --check`. Without a key, the AI step writes a dry-run request instead of failing.
 
+## Data handling (what the AI step sends, and to whom)
+The **only** tools that send anything off this machine are the optional `--ai` intake pass and
+direct `tools/ai_client.py` calls. Everything else (templates, spec packets, artwork checks,
+proofs, the dashboard, the proof log) runs entirely locally.
+
+What `intake.py --ai` sends: **PNG renders of the handoff's pages** plus the **panel list** the
+deterministic text pass extracted — to **OpenRouter** (`openrouter.ai`), which routes the request
+to the configured model (`OPENROUTER_MODEL`). Specifically:
+- Every request carries `provider: {"data_collection": "deny"}`, telling OpenRouter the content
+  may not be retained or used for training.
+- A notice is printed before each upload:
+  `Uploading N page image(s) of <file> to OpenRouter (<model>)`.
+- **NDA jobs:** set `SEE_AI_UPLOAD_OK=0` to block image uploads entirely — intake then writes the
+  request locally (`_intake_ai_dryrun.json`) instead of calling out. Default (unset): uploads are
+  allowed whenever a key is configured.
+- Without a key, nothing is ever sent (the dry-run request is written locally instead).
+- The model's full response is written to the gitignored `_intake_ai_response.json`; the draft
+  booth file keeps only a short summary (status, model, proposed-panel count, missing/unsure list).
+
 ## Requirements
 - Adobe Illustrator (for the `.jsx` template generator)
 - Python 3 with the pinned runtime deps (`pypdf`, `Pillow`, `openpyxl`):

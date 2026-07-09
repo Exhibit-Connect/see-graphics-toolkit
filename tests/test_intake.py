@@ -448,3 +448,60 @@ def test_ai_field_guesses_maps_finish_and_finishing_type():
     assert intake.ai_field_guesses(ai, panels, "finishing_type") == {"E": "SEG", "Z": "Direct Print"}
     assert intake.ai_finish_guesses(ai, panels) == {"E": "fabric", "K": "vinyl"}   # wrapper
     assert intake.ai_field_guesses({"_status": "dry-run"}, panels, "finish") == {}
+
+
+# ---------- P3-5: AI data-handling transparency ----------
+def test_ai_enrich_blocked_by_nda_gate_never_calls_out(monkeypatch, tmp_path):
+    import ai_client
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(intake, "GS", "gs")
+    monkeypatch.setattr(intake.subprocess, "run", _gs_writer())
+    monkeypatch.setattr(ai_client, "available", lambda: True)
+    monkeypatch.setenv(ai_client.UPLOAD_ENV, "0")
+    monkeypatch.setattr(ai_client, "ask_json",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("called out!")))
+    ai = intake.ai_enrich("x.pdf", 2, [])
+    assert ai["_status"] == "blocked"
+    assert ai_client.UPLOAD_ENV in ai["_note"]
+    assert (tmp_path / "_intake_ai_dryrun.json").exists()   # request kept locally
+    assert not (tmp_path / intake.AI_RESPONSE_FILE).exists()
+
+
+def test_ai_enrich_live_prints_upload_notice_and_writes_response_file(monkeypatch, tmp_path, capsys):
+    import ai_client
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(intake, "GS", "gs")
+    monkeypatch.setattr(intake.subprocess, "run", _gs_writer())
+    monkeypatch.setattr(ai_client, "available", lambda: True)
+    monkeypatch.delenv(ai_client.UPLOAD_ENV, raising=False)
+    full = {"panels": [{"name": "A", "w": 10, "h": 20, "dims_shown": True}],
+            "missing_or_unsure": ["B"]}
+    monkeypatch.setattr(ai_client, "ask_json", lambda *a, **k: dict(full))
+    ai = intake.ai_enrich("x.pdf", 3, [])
+    out = capsys.readouterr().out
+    assert f"Uploading 3 page image(s) of x.pdf to OpenRouter ({ai_client.MODEL})" in out
+    assert ai["_status"] == "live"
+    saved = json.load(open(tmp_path / intake.AI_RESPONSE_FILE, encoding="utf-8"))
+    assert saved["panels"] == full["panels"]                 # full body preserved on disk
+
+
+def test_ai_persist_summary_trims_the_spec_payload():
+    live = {"_status": "live", "_model": "m", "_warnings": ["w"],
+            "panels": [{"name": "A"}, {"name": "B"}], "missing_or_unsure": ["C"],
+            "extra_model_chatter": "x" * 500}
+    s = intake.ai_persist_summary(live)
+    assert s == {"_status": "live", "_model": "m", "panels_proposed": 2,
+                 "missing_or_unsure": ["C"],
+                 "full_response": intake.AI_RESPONSE_FILE + " (gitignored)"}
+    assert intake.ai_persist_summary(None) is None
+    dry = {"_status": "dry-run", "_note": "n", "_model": "m", "_pages_rendered": 2,
+           "_warnings": []}
+    assert intake.ai_persist_summary(dry) == {"_status": "dry-run", "_note": "n",
+                                              "_model": "m", "_pages_rendered": 2}
+
+
+def test_review_names_the_blocked_ai_pass():
+    md = intake.build_review("J", "x.pdf", [], [], [], [],
+                             {"_status": "blocked", "_note": "SEE_AI_UPLOAD_OK blocks uploading"},
+                             "text", [], [])
+    assert "**blocked**" in md and "SEE_AI_UPLOAD_OK" in md

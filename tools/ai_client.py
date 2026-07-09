@@ -22,11 +22,12 @@ CLI:
     python3 ai_client.py "prompt" [img...]       # live call (needs the key)
 Exit codes: 0 ok; 1 the call/dry-run failed; 2 usage error.
 """
-import os, sys, json, base64, time, urllib.request, urllib.error
+import os, re, sys, json, base64, time, urllib.request, urllib.error
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-opus-4.8")
 RETRY_CODES = {429, 500, 502, 503, 529}   # transient - worth another attempt
+UPLOAD_ENV = "SEE_AI_UPLOAD_OK"           # NDA gate for uploading client imagery
 _MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
          "webp": "image/webp", "gif": "image/gif"}
 _cwd_notice_shown = False
@@ -72,6 +73,22 @@ KEY = _load_key()[0]
 
 def available():
     return bool(_load_key()[0])
+
+
+def upload_allowed():
+    """P3-5 NDA gate: set SEE_AI_UPLOAD_OK=0 (or no/false/off) to block any
+    live call that would upload images (client handoff pages) to OpenRouter.
+    Default — the variable unset or anything else — is allowed whenever a key
+    is configured (see the README 'Data handling' section)."""
+    return os.environ.get(UPLOAD_ENV, "").strip().lower() not in ("0", "no", "false", "off")
+
+
+def _sanitize_body(txt, cap=120):
+    """One printable line from an HTTP error body for an exception message:
+    newlines/control runs collapsed, capped at `cap` chars (the full body goes
+    to stderr — a multi-KB HTML error page in a raised message wrecked every
+    caller's one-line summary)."""
+    return re.sub(r"\s+", " ", txt or "").strip()[:cap]
 
 
 def _content(prompt, image_paths):
@@ -137,6 +154,10 @@ def ask(prompt, image_paths=None, temperature=0, json_mode=False, timeout=120,
     key, _src = _load_key()
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY not set — export it to enable the AI step.")
+    if image_paths and not upload_allowed():
+        raise RuntimeError(f"{UPLOAD_ENV}={os.environ.get(UPLOAD_ENV)!r} blocks uploading "
+                           f"images to OpenRouter (NDA gating) — unset it or set it to 1 "
+                           f"to allow the upload.")
     opener = opener or urllib.request.urlopen
     body = json.dumps(build_payload(prompt, image_paths, temperature, json_mode)).encode()
     req = urllib.request.Request(OPENROUTER_URL, data=body, headers={
@@ -155,7 +176,9 @@ def ask(prompt, image_paths=None, temperature=0, json_mode=False, timeout=120,
                 body_txt = e.read().decode(errors="replace")
             except Exception:
                 body_txt = ""
-            last_err = RuntimeError(f"OpenRouter HTTP {e.code}: {body_txt[:300]}")
+            if body_txt:
+                print(f"OpenRouter HTTP {e.code} response body:\n{body_txt}", file=sys.stderr)
+            last_err = RuntimeError(f"OpenRouter HTTP {e.code}: {_sanitize_body(body_txt)}")
             if e.code not in RETRY_CODES or attempt == attempts - 1:
                 raise last_err
             time.sleep(_retry_delay(e, attempt))

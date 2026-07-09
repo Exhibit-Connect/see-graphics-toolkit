@@ -322,6 +322,11 @@ AI_PROMPT = (
 )
 
 
+# The model's full response body (gitignored — inspect/debug only; the draft
+# spec persists just a summary of it, see ai_persist_summary).
+AI_RESPONSE_FILE = "_intake_ai_response.json"
+
+
 def ai_enrich(path, n_pages, det_panels, max_pages=None):
     import ai_client
     imgs, warnings = render_pages(path, n_pages, max_pages)
@@ -336,8 +341,24 @@ def ai_enrich(path, n_pages, det_panels, max_pages=None):
                 f.write(json.dumps(payload, indent=2))
             return {"_status": "dry-run", "_note": "OPENROUTER_API_KEY not set; wrote _intake_ai_dryrun.json",
                     "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
+        if not ai_client.upload_allowed():
+            # P3-5 NDA gate: a key is configured but this job's imagery must not
+            # leave the machine — write the request locally, exactly like dry-run.
+            payload = ai_client._redacted_payload(prompt, imgs, json_mode=True)
+            with open("_intake_ai_dryrun.json", "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, indent=2))
+            return {"_status": "blocked",
+                    "_note": f"{ai_client.UPLOAD_ENV} blocks uploading this job's page images "
+                             f"to OpenRouter (NDA gating); wrote _intake_ai_dryrun.json instead",
+                    "_pages_rendered": len(imgs), "_model": ai_client.MODEL, "_warnings": warnings}
         try:
+            # P3-5 transparency notice: say exactly what is leaving the machine
+            print(f"Uploading {len(imgs)} page image(s) of {os.path.basename(path)} "
+                  f"to OpenRouter ({ai_client.MODEL})")
             data = ai_client.ask_json(prompt, imgs)
+            # the full response goes to a gitignored file, not into the draft spec
+            with open(AI_RESPONSE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
             data["_status"] = "live"; data["_model"] = ai_client.MODEL; data["_warnings"] = warnings
             return data
         except Exception as e:
@@ -351,6 +372,24 @@ def ai_enrich(path, n_pages, det_panels, max_pages=None):
                 pass
         for d in tmpdirs:
             shutil.rmtree(d, ignore_errors=True)
+
+
+def ai_persist_summary(ai):
+    """What the draft spec persists about the AI pass (P3-5): status / model /
+    note / error, the advisory missing_or_unsure list, and a proposed-panel
+    count — never the full response (the seeded panels already live in
+    spec['panels']; the full body is in the gitignored AI_RESPONSE_FILE).
+    Pure; None passes through (AI pass not run)."""
+    if not isinstance(ai, dict):
+        return ai
+    keep = {k: ai[k] for k in ("_status", "_model", "_note", "_error", "_pages_rendered")
+            if k in ai}
+    if ai.get("missing_or_unsure"):
+        keep["missing_or_unsure"] = ai["missing_or_unsure"]
+    if ai.get("_status") == "live":
+        keep["panels_proposed"] = len(ai.get("panels", []) or [])
+        keep["full_response"] = AI_RESPONSE_FILE + " (gitignored)"
+    return keep
 
 
 def ai_field_guesses(ai, panels, field):
@@ -539,6 +578,8 @@ def build_review(job, src, panels, conflicts, fullscale, extras, ai, panel_sourc
         lines.append("- not run (use `--ai`).")
     elif ai.get("_status") == "dry-run":
         lines.append(f"- **dry-run** (no API key). Model `{ai.get('_model')}`. Request written to `_intake_ai_dryrun.json` — set `OPENROUTER_API_KEY` and re-run with `--ai` to execute.")
+    elif ai.get("_status") == "blocked":
+        lines.append(f"- **blocked** — {ai.get('_note')}")
     elif ai.get("_status") == "live":
         lines.append(f"- **ran live** with `{ai.get('_model')}`. Proposed {len(ai.get('panels', []))} surface(s); "
                      f"missing/unsure: {', '.join(ai.get('missing_or_unsure', []) or ['none'])}.")
@@ -644,7 +685,7 @@ def main(argv=None):
                     "ai_undimensioned": undimensioned, "fullscale_confirms": len(fullscale),
                     "conflicts": [{"note": c} if isinstance(c, str) else
                                   {"name": c[0], "a": c[1], "b": c[2]} for c in conflicts],
-                    "notes": extras, "warnings": warnings, "ai": ai},
+                    "notes": extras, "warnings": warnings, "ai": ai_persist_summary(ai)},
     }
     with open(out, "w", encoding="utf-8") as f:
         json.dump(spec, f, indent=2)

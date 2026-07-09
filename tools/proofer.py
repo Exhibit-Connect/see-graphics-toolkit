@@ -411,6 +411,7 @@ def check_size(info, spec, p):
     if info["kind"] == "pdf":
         tw, th = (info["trim_in"] or info["media_in"])
         m = size_match(tw, th, expected)
+        info["size_match_label"] = m  # threaded to check_marks via run_checks
         size_txt = f'{tw:.2f}" x {th:.2f}" ({"trim" if info["trim_in"] else "media (no TrimBox)"})'
         # every page must match an expected size, not just page 1
         bad_pages = []
@@ -441,6 +442,7 @@ def check_size(info, spec, p):
         if info["dpi"]:
             w_in, h_in = px / info["dpi"], py / info["dpi"]
             m = size_match(w_in, h_in, expected)
+            info["size_match_label"] = m
             if m:
                 bare, mscale = _bare_trim_scale(m, sc)
                 if bare:
@@ -519,12 +521,29 @@ def check_fonts(info):
     return "PASS", "no live fonts - text is outlined"
 
 
-def check_marks(info):
+def check_marks(info, spec=None, size_label=None):
+    """Compare the media-beyond-trim margin against the bleed the spec expects
+    (scaled to the build scale check_size matched). Typical crop/registration
+    marks add ~0.25-0.5\" beyond the bleed, so any margin clearly over the
+    expected bleed is flagged. Without a spec, falls back to the legacy 2.5\"
+    heuristic (kept for backward compatibility)."""
     if info["kind"] != "pdf" or info["marks_margin_in"] is None:
         return "NA", "no TrimBox - cannot assess printer marks"
-    if info["marks_margin_in"] > 2.5:
-        return "WARN", f'{info["marks_margin_in"]}" beyond trim per side - possible crop/registration marks'
-    return "PASS", f'{info["marks_margin_in"]}" beyond trim per side - no obvious marks'
+    margin = info["marks_margin_in"]
+    if spec is not None:
+        st = spec.get("settings", {})
+        b = st.get("bleed_per_side_in", 1.0)
+        sc = st.get("scale", 0.5)
+        _, mscale = _bare_trim_scale(size_label, sc)
+        expected = b * mscale
+        if margin > expected + 0.15:
+            return "WARN", (f'{margin}" beyond trim per side exceeds the expected {expected:g}" '
+                            f'bleed - possible crop/registration marks or oversized media')
+        return "PASS", (f'{margin}" beyond trim per side - consistent with the expected '
+                        f'{expected:g}" bleed, no obvious marks')
+    if margin > 2.5:
+        return "WARN", f'{margin}" beyond trim per side - possible crop/registration marks'
+    return "PASS", f'{margin}" beyond trim per side - no obvious marks'
 
 
 def check_spelling(info):
@@ -571,7 +590,7 @@ def run_checks(path, spec, panel_arg=None):
     if rc:
         results["resolution"] = rc
     results["fonts"] = check_fonts(info)
-    results["marks"] = check_marks(info)
+    results["marks"] = check_marks(info, spec, info.get("size_match_label"))
     results["spelling"] = check_spelling(info)
     statuses = [s for s, _ in results.values()]
     verdict = "FAIL" if "FAIL" in statuses else ("REVIEW" if "WARN" in statuses else "PASS")

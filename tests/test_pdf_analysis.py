@@ -252,6 +252,23 @@ def test_zero_bleed_trim_size_pdf_gets_review_and_fix_entry(tmp_path):
     assert size_fixes and "bleed" in size_fixes[0]["text"]
 
 
+# ---------- P0-5: marks margin vs expected bleed (end-to-end threading) ----------
+def test_crop_mark_margin_fixture_warns_marks(tmp_path):
+    """TrimBox 100x200in, media extends 1.4in per side (bleed 1.0 + marks):
+    size PASSes (bleed present) but marks must WARN - the old 2.5in threshold
+    made this unreachable for realistic exports."""
+    media = (102.8 * 72, 202.8 * 72)
+    trim_box = "/TrimBox [100.8 100.8 7300.8 14500.8] "
+    objs = catalog_and_pages() + [
+        page(media, "<< >>", "4 0 R", extra=trim_box),
+        stream("", "1 0 0 0 k 0 0 7401.6 14601.6 re f"),
+    ]
+    res = proofer.run_checks(build_pdf(tmp_path / "Wall_A_marks.pdf", objs), SPEC, "Wall A")
+    assert res["results"]["size"][0] == "PASS"
+    st, msg = res["results"]["marks"]
+    assert st == "WARN" and "crop/registration marks" in msg
+
+
 # ---------- P0-2: all pages analyzed, not just page 1 ----------
 def two_page_pdf(tmp_path):
     """Page 1: clean CMYK at full+bleed size. Page 2: wrong-sized with an RGB

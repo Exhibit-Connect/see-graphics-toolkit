@@ -199,6 +199,53 @@ def test_fix_instructions_raster_cannot_verify_warn_has_no_bleed_entry():
     assert proofer.fix_instructions(results, {}, SPEC, PANEL_A) == []
 
 
+# ---------- P0-5: printer-marks check fires on real crop marks ----------
+def _marks_info(margin):
+    return {"kind": "pdf", "marks_margin_in": margin}
+
+
+def test_marks_margin_over_expected_bleed_warns_full_scale():
+    # bleed 1.0, full-scale match: 1.4" margin = marks territory
+    st, msg = proofer.check_marks(_marks_info(1.4), SPEC, "full + bleed")
+    assert st == "WARN" and 'expected 1"' in msg
+
+
+def test_marks_margin_equal_to_bleed_passes_full_scale():
+    st, msg = proofer.check_marks(_marks_info(1.0), SPEC, "full + bleed")
+    assert st == "PASS"
+
+
+def test_marks_half_scale_margin_at_scaled_bleed_passes():
+    # half-scale match: expected bleed 0.5"
+    st, msg = proofer.check_marks(_marks_info(0.5), SPEC, "half + bleed")
+    assert st == "PASS"
+
+
+def test_marks_half_scale_oversized_margin_warns():
+    st, msg = proofer.check_marks(_marks_info(0.8), SPEC, "half + bleed")
+    assert st == "WARN" and 'expected 0.5"' in msg
+
+
+def test_marks_no_trimbox_is_na():
+    assert proofer.check_marks(_marks_info(None), SPEC, "full + bleed")[0] == "NA"
+    assert proofer.check_marks({"kind": "raster", "marks_margin_in": None})[0] == "NA"
+
+
+def test_marks_legacy_heuristic_without_spec():
+    # backward compatible: no spec -> old 2.5" threshold
+    assert proofer.check_marks(_marks_info(1.4))[0] == "PASS"
+    assert proofer.check_marks(_marks_info(2.6))[0] == "WARN"
+
+
+def test_check_size_records_matched_label_for_marks_threading():
+    info = _pdf_info((102, 202))
+    proofer.check_size(info, SPEC, PANEL_A)
+    assert info["size_match_label"] == "full + bleed"
+    info = _pdf_info((33, 33))
+    proofer.check_size(info, SPEC, PANEL_A)
+    assert info["size_match_label"] is None
+
+
 # ---------- fix-it instructions (Feature 3) ----------
 PANEL = SPEC["panels"][0]   # Wall A: 100 x 200, bleed 1, scale 0.5
 

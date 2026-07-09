@@ -29,6 +29,7 @@ RED = branding.RED
 DICT = "/usr/share/dict/words"
 TOL = 0.08  # inch tolerance on size checks
 RASTER_EXT = (".tif", ".tiff", ".jpg", ".jpeg", ".png", ".psd", ".bmp", ".gif")
+MAX_FORM_DEPTH = 16  # recursion cap when walking nested Form XObjects
 
 
 # ---------- spec / panel matching ----------
@@ -130,11 +131,13 @@ def mat_mul(m, c):  # PDF: new_CTM = m . c  (m,c = [a,b,c,d,e,f])
             e * A + f * C + E, e * B + f * D + F]
 
 
-def image_placements(content, img_names):
-    """Return {name: (placed_w_pt, placed_h_pt)} by tracking the CTM to each `/Name Do`."""
+def _do_ctms(content, base=None):
+    """[(xobject_name, ctm), ...] for every `/Name Do` in a content stream,
+    tracking the graphics-state CTM (q / Q / cm). `base` seeds the CTM so a
+    Form XObject's stream can be scanned in its placed coordinate space."""
+    base = list(base) if base else [1, 0, 0, 1, 0, 0]
     toks = re.findall(r"/[^\s/<>\[\]()]+|-?\d+\.?\d*|[a-zA-Z*'\"]+", content)
-    # track the CTM to each `/Name Do`; the name immediately precedes its Do
-    ctm = [1, 0, 0, 1, 0, 0]; stack = []; nums = []; last_name = None; placed = {}
+    ctm = base[:]; stack = []; nums = []; last_name = None; out = []
     for t in toks:
         if re.match(r"^-?\d+\.?\d*$", t):
             nums.append(float(t)); continue
@@ -145,20 +148,65 @@ def image_placements(content, img_names):
         elif t == "q":
             stack.append(ctm[:]); nums = []
         elif t == "Q":
-            ctm = stack.pop() if stack else [1, 0, 0, 1, 0, 0]; nums = []
+            ctm = stack.pop() if stack else base[:]; nums = []
         elif t == "Do":
-            if last_name in img_names:
-                a, b, c, d = ctm[0], ctm[1], ctm[2], ctm[3]
-                placed[last_name] = (math.hypot(a, b), math.hypot(c, d))
+            if last_name:
+                out.append((last_name, ctm[:]))
             nums = []
         else:
             nums = []
+    return out
+
+
+def image_placements(content, img_names):
+    """Return {name: (placed_w_pt, placed_h_pt)} by tracking the CTM to each `/Name Do`."""
+    placed = {}
+    for nm, ctm in _do_ctms(content):
+        if nm in img_names:
+            a, b, c, d = ctm[0], ctm[1], ctm[2], ctm[3]
+            placed[nm] = (math.hypot(a, b), math.hypot(c, d))
     return placed
 
 
-def page_content(page):
+def _deref(o):
+    return o.get_object() if hasattr(o, "get_object") else o
+
+
+def _decoded_stream(s, label, gaps):
+    """Decode a pypdf stream object, recording an analysis gap on failure.
+    pypdf returns b'' (with only a logged warning) when a stream's filter
+    can't decode the data - that silent failure must be surfaced, not treated
+    as an empty (clean) stream."""
+    def note(reason):
+        if gaps is not None:
+            gaps.append(f"{label} could not be decoded: {reason}")
+    try:
+        data = s.get_data()
+    except Exception as e:
+        note(e)
+        return ""
+    if not data:
+        raw = getattr(s, "_data", b"") or b""
+        flt = str(s.get("/Filter") or "")
+        if raw and flt:
+            genuinely_empty = False
+            if "FlateDecode" in flt:
+                try:
+                    import zlib
+                    genuinely_empty = zlib.decompress(raw) == b""
+                except Exception:
+                    genuinely_empty = False
+            if not genuinely_empty:
+                note("stream filter produced no data")
+                return ""
+    return data.decode("latin-1", "replace")
+
+
+def page_content(page, gaps=None):
     """Decoded content stream, with a direct /Contents fallback (some writers,
-    e.g. Chrome, return nothing from get_contents())."""
+    e.g. Chrome, return nothing from get_contents()). When `gaps` (a list) is
+    given, a stream that exists but cannot be decoded records an analysis gap
+    instead of silently vanishing."""
     try:
         d = page.get_contents()
         if d:
@@ -166,21 +214,113 @@ def page_content(page):
             if t.strip():
                 return t
     except Exception:
-        pass
+        pass  # fall through to the direct /Contents path
     try:
-        co = page.get("/Contents")
-        co = co.get_object() if hasattr(co, "get_object") else co
+        co = _deref(page.get("/Contents"))
+        if co is None:
+            return ""
         items = co if isinstance(co, list) else [co]
         out = ""
         for s in items:
-            s = s.get_object() if hasattr(s, "get_object") else s
-            try:
-                out += s.get_data().decode("latin-1", "replace")
-            except Exception:
-                pass
+            out += _decoded_stream(_deref(s), "content stream", gaps)
         return out
-    except Exception:
+    except Exception as e:
+        if gaps is not None:
+            gaps.append(f"content stream could not be decoded: {e}")
         return ""
+
+
+# matches an inline image (BI ... ID) - pypdf gives us no dims/colorspace for
+# these, so their presence is recorded as an analysis gap
+INLINE_IMG_RE = re.compile(r"(?<![A-Za-z0-9])BI(?![A-Za-z0-9])[\s\S]+?(?<![A-Za-z0-9])ID(?![A-Za-z0-9])")
+
+
+def _scan_context(res, content, base_ctm, info, images, visited, depth):
+    """Collect fonts / colorspaces / images from one content context (a page or
+    a Form XObject) into `info` and `images`, recursing into nested Form
+    XObjects with their /Matrix composed onto the placing CTM. Any object that
+    cannot be read is recorded in info['analysis_gaps'] - analysis failures
+    must never look like a clean file."""
+    gaps = info["analysis_gaps"]
+    res = _deref(res) or {}
+    fonts = _deref(res.get("/Font"))
+    if fonts:
+        info["fonts"] += len(fonts)
+    csres = _deref(res.get("/ColorSpace"))
+    if csres:
+        for v in csres.values():
+            info["colors"].add(resolve_cs(v))
+    shres = _deref(res.get("/Shading"))
+    if shres:
+        for v in shres.values():
+            try:
+                info["colors"].add(resolve_cs(_deref(v).get("/ColorSpace")))
+            except Exception as e:
+                gaps.append(f"shading resource could not be parsed: {e}")
+    patres = _deref(res.get("/Pattern"))
+    if patres:
+        for v in patres.values():
+            try:
+                sh = _deref(_deref(v).get("/Shading"))
+                if sh:
+                    info["colors"].add(resolve_cs(sh.get("/ColorSpace")))
+            except Exception as e:
+                gaps.append(f"pattern resource could not be parsed: {e}")
+    xo = _deref(res.get("/XObject"))
+    img_dims, forms = {}, {}
+    if xo:
+        for name, ref in xo.items():
+            key = (ref.idnum, ref.generation) if hasattr(ref, "idnum") else None
+            try:
+                o = _deref(ref)
+                sub = str(o.get("/Subtype"))
+                if sub == "/Image":
+                    w = int(o["/Width"]); h = int(o["/Height"])
+                    img_dims[name.lstrip("/")] = (w, h)
+                    info["colors"].add(resolve_cs(o.get("/ColorSpace")))
+                elif sub == "/Form":
+                    forms[name.lstrip("/")] = (o, key)
+            except Exception as e:
+                gaps.append(f"XObject '{name}' could not be parsed: {e}")
+    dos = _do_ctms(content, base_ctm) if content else []
+    if content:
+        # inline fill/stroke colour operators (catches RGB/CMYK in vector art, not just images)
+        ops = set(re.findall(r"(?<![A-Za-z0-9])(rg|RG|k|K)(?![A-Za-z0-9])", content))
+        if "rg" in ops or "RG" in ops:
+            info["colors"].add("RGB")
+        if "k" in ops or "K" in ops:
+            info["colors"].add("CMYK")
+        if INLINE_IMG_RE.search(content):
+            gaps.append("inline image (BI/ID/EI) present - not analyzed")
+    placed = {}
+    for nm, ctm in dos:
+        if nm in img_dims:
+            a, b, c, d = ctm[0], ctm[1], ctm[2], ctm[3]
+            placed[nm] = (math.hypot(a, b), math.hypot(c, d))
+    for nm, (pw, ph) in img_dims.items():
+        images.append({"px": (pw, ph), "placed_pt": placed.get(nm)})
+    # recurse into Form XObjects (Illustrator/InDesign exports wrap most
+    # content in Forms - their fonts/images were previously invisible)
+    form_place = {nm: ctm for nm, ctm in dos if nm in forms}
+    for nm, (o, key) in forms.items():
+        if key is not None:
+            if key in visited:
+                continue  # cycle (or an already-scanned shared form)
+            visited.add(key)
+        if depth >= MAX_FORM_DEPTH:
+            gaps.append(f"form nesting deeper than {MAX_FORM_DEPTH} - not fully analyzed")
+            continue
+        place = form_place.get(nm, list(base_ctm) if base_ctm else [1, 0, 0, 1, 0, 0])
+        try:
+            mtx = [float(x) for x in (o.get("/Matrix") or [1, 0, 0, 1, 0, 0])]
+        except Exception:
+            mtx = [1, 0, 0, 1, 0, 0]
+        eff = mat_mul(mtx, place)
+        fcontent = _decoded_stream(o, f"form XObject '{nm}' stream", gaps)
+        try:
+            _scan_context(o.get("/Resources"), fcontent, eff, info, images, visited, depth + 1)
+        except Exception as e:
+            gaps.append(f"form XObject '{nm}' could not be analyzed: {e}")
 
 
 def analyze_pdf(path):
@@ -191,46 +331,21 @@ def analyze_pdf(path):
     info = {"kind": "pdf", "pages": len(r.pages),
             "media_in": (float(mb.width) / 72.0, float(mb.height) / 72.0),
             "trim_in": None, "fonts": 0, "colors": set(), "images": [],
-            "min_ppi": None, "text": "", "marks_margin_in": None}
+            "min_ppi": None, "text": "", "marks_margin_in": None,
+            "analysis_gaps": []}
     if "/TrimBox" in page:
         tb = page.trimbox
         info["trim_in"] = (float(tb.width) / 72.0, float(tb.height) / 72.0)
-    res = page.get("/Resources")
-    res = res.get_object() if hasattr(res, "get_object") else (res or {})
-    fonts = res.get("/Font")
-    fonts = fonts.get_object() if hasattr(fonts, "get_object") else fonts
-    info["fonts"] = len(fonts) if fonts else 0
-    csres = res.get("/ColorSpace")
-    csres = csres.get_object() if hasattr(csres, "get_object") else csres
-    if csres:
-        for v in csres.values():
-            info["colors"].add(resolve_cs(v))
-    # images
-    xo = res.get("/XObject")
-    xo = xo.get_object() if hasattr(xo, "get_object") else xo
-    img_dims = {}
-    if xo:
-        for name, ref in xo.items():
-            try:
-                o = ref.get_object()
-                if str(o.get("/Subtype")) == "/Image":
-                    w = int(o["/Width"]); h = int(o["/Height"])
-                    img_dims[name.lstrip("/")] = (w, h)
-                    info["colors"].add(resolve_cs(o.get("/ColorSpace")))
-            except Exception:
-                pass
-    content = page_content(page)
-    placed = image_placements(content, set(img_dims.keys())) if content else {}
-    # inline fill/stroke colour operators (catches RGB/CMYK in vector art, not just images)
-    ops = set(re.findall(r"(?<![A-Za-z0-9])(rg|RG|k|K)(?![A-Za-z0-9])", content))
-    if "rg" in ops or "RG" in ops:
-        info["colors"].add("RGB")
-    if "k" in ops or "K" in ops:
-        info["colors"].add("CMYK")
+    content = page_content(page, info["analysis_gaps"])
+    raw_images = []
+    _scan_context(page.get("/Resources"), content, None, info, raw_images,
+                  visited=set(), depth=0)
     trim_w = (info["trim_in"] or info["media_in"])[0]
-    for nm, (pw, ph) in img_dims.items():
-        if nm in placed and placed[nm][0] > 1:
-            ppi = pw / (placed[nm][0] / 72.0)
+    for im in raw_images:
+        pw, ph = im["px"]
+        placed = im["placed_pt"]
+        if placed and placed[0] > 1:
+            ppi = pw / (placed[0] / 72.0)
             how = "placed"
         else:
             ppi = pw / trim_w if trim_w else 0  # fallback: assume full-width placement
@@ -245,7 +360,9 @@ def analyze_pdf(path):
     if info["trim_in"]:
         mw, tw = info["media_in"][0], info["trim_in"][0]
         info["marks_margin_in"] = round((mw - tw) / 2.0, 3)
-    info["colors"].discard("Unknown")
+    if "Unknown" in info["colors"]:
+        info["colors"].discard("Unknown")
+        info["analysis_gaps"].append("unidentified colorspace could not be resolved")
     return info
 
 
@@ -290,11 +407,19 @@ def check_color(info):
             return "WARN", f"{mode} (grayscale)"
         return "WARN", f"mode {mode}"
     colors = info["colors"]
+    gaps = info.get("analysis_gaps") or []
     if not colors:
+        if gaps:
+            return "WARN", (f"no color spaces detected, and {len(gaps)} object(s) could not be "
+                            f"analyzed - color cannot be confirmed")
         return "WARN", "no color spaces detected"
     if "RGB" in colors:
         return "FAIL", "contains RGB - " + ", ".join(sorted(colors))
     if "CMYK" in colors or "Spot/Separation" in colors:
+        if gaps:
+            return "WARN", (", ".join(sorted(colors)) +
+                            f" - but {len(gaps)} object(s)/colorspace(s) could not be analyzed, "
+                            f"so color cannot be fully confirmed")
         return "PASS", ", ".join(sorted(colors))
     return "WARN", ", ".join(sorted(colors))
 
@@ -310,6 +435,10 @@ def check_resolution(info):
             return "WARN", f"{d} ppi (> 150, more than needed)"
         return "PASS", f"{d} ppi"
     if not info["images"]:
+        gaps = info.get("analysis_gaps") or []
+        if gaps:
+            return "WARN", (f"could not fully analyze {len(gaps)} object(s) - unable to confirm "
+                            f"the file is vector-only, so resolution is unverified")
         return "PASS", "no raster images (vector) - resolution not a factor"
     lo = min(i["ppi"] for i in info["images"])
     hi = max(i["ppi"] for i in info["images"])
@@ -326,6 +455,10 @@ def check_fonts(info):
         return "NA", "raster file - no fonts"
     if info["fonts"] > 0:
         return "WARN", f'{info["fonts"]} live font(s) - NOT outlined (enables spell-check, but outline before final print)'
+    form_gaps = [g for g in info.get("analysis_gaps", []) if g.startswith("form")]
+    if form_gaps:
+        return "WARN", (f"no live fonts found, but {len(form_gaps)} form object(s) could not be "
+                        f"fully analyzed - cannot confirm text is outlined")
     return "PASS", "no live fonts - text is outlined"
 
 
@@ -527,7 +660,8 @@ BADGE = {"PASS": "#2E9E40", "WARN": "#F7941E", "FAIL": RED, "NA": "#9a9a9a"}
 render_pdf = render.html_to_pdf
 
 
-def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b64=None):
+def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b64=None,
+                      gaps=None):
     rows = ""
     for k in ORDER:
         if k not in results:
@@ -543,6 +677,11 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
                       for f in fixes)
         fix_html = (f'<div class="fixes"><div class="fixhd">What to change — give this to the client</div>'
                     f'<ol>{lis}</ol></div>')
+    gaps_html = ""
+    if gaps:
+        gl = "".join(f"<li>{html.escape(g)}</li>" for g in gaps)
+        gaps_html = (f'<div class="gaps"><div class="gaphd">Analysis gaps — parts of this file '
+                     f'could not be fully checked</div><ul>{gl}</ul></div>')
     mark_html = (f'<div class="mark"><img src="{preview_b64}" alt="marked-up preview">'
                  f'<div class="markcap">Marked-up preview (the file itself is unchanged)</div></div>'
                  if preview_b64 else "")
@@ -563,6 +702,10 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
       .fixhd {{ font-weight:700; color:#7a4a00; margin-bottom:5px; }}
       .fixes ol {{ margin:0; padding-left:20px; }}
       .fixes li {{ margin:4px 0; font-size:11.5px; color:#5a3800; }}
+      .gaps {{ margin:12px 0; padding:10px 14px; background:#FFF4E5; border:1px dashed #F7941E; border-radius:5px; }}
+      .gaphd {{ font-weight:700; color:#7a4a00; margin-bottom:5px; }}
+      .gaps ul {{ margin:0; padding-left:20px; }}
+      .gaps li {{ margin:3px 0; font-size:11px; color:#5a3800; }}
       .mark {{ margin:10px 0; text-align:center; }}
       .mark img {{ max-width:100%; max-height:340px; border:1px solid #ddd; border-radius:6px; }}
       .markcap {{ color:#999; font-size:9.5px; margin-top:4px; }}
@@ -574,6 +717,7 @@ def build_report_html(fname, panel, how, results, verdict, fixes=None, preview_b
       <div class="meta">Panel: <b>{html.escape(panel)}</b> ({how}) &nbsp;·&nbsp; checked against the booth spec</div>
       <div class="verdict">{verdict}</div>
       {fix_html}
+      {gaps_html}
       {mark_html}
       <table><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>{rows}</tbody></table>
       <footer>SEE AI Proofer · automated preflight against the single-source booth spec · WARN/FAIL items need a human's eyes before approval.</footer>
@@ -633,17 +777,22 @@ def main():
             print("  what to change (client-ready):")
             for f in fixes:
                 print(f"    - {f['check']}: {f['text']}")
+        gaps = info.get("analysis_gaps") or []
+        if gaps:
+            print("  analysis gaps (parts of the file could not be fully checked):")
+            for g in gaps:
+                print(f"    - {g}")
 
         base = os.path.splitext(os.path.basename(fname))[0]
         json.dump({"file": fname, "panel": panel["name"], "verdict": verdict,
                    "results": {k: {"status": v[0], "detail": v[1]} for k, v in results.items()},
-                   "fixes": fixes or []},
+                   "fixes": fixes or [], "analysis_gaps": gaps},
                   open(f"{base}_preflight.json", "w"), indent=2)
         preview = marked_preview(fname, info, spec, panel, fixes)
         hp = os.path.abspath(f"{base}_preflight.html")
         open(hp, "w").write(build_report_html(fname, panel["name"], how, results,
                             "PASS" if verdict == "PASS" else ("NEEDS REVIEW" if verdict == "REVIEW" else "FAIL"),
-                            fixes=fixes, preview_b64=preview))
+                            fixes=fixes, preview_b64=preview, gaps=gaps))
         if render_pdf(hp, os.path.abspath(f"{base}_preflight.pdf")):
             print(f"  report: {base}_preflight.pdf")
         else:

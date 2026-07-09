@@ -98,7 +98,35 @@ def test_check_resolution_raster_thresholds():
 
 
 def test_check_resolution_pdf_vector_only_passes():
+    # genuinely vector (no analysis gaps) -> PASS retained
     assert proofer.check_resolution({"kind": "pdf", "images": []})[0] == "PASS"
+    assert proofer.check_resolution({"kind": "pdf", "images": [],
+                                     "analysis_gaps": []})[0] == "PASS"
+
+
+def test_check_resolution_pdf_gaps_block_vector_pass():
+    # analysis failures must never yield the vector-only PASS
+    st, msg = proofer.check_resolution({"kind": "pdf", "images": [],
+                                        "analysis_gaps": ["XObject '/Im1' could not be parsed: boom"]})
+    assert st == "WARN"
+    assert "could not fully analyze 1 object(s)" in msg
+
+
+def test_check_color_gaps_block_cmyk_pass():
+    st, msg = proofer.check_color({"kind": "pdf", "colors": {"CMYK"},
+                                   "analysis_gaps": ["unidentified colorspace could not be resolved"]})
+    assert st == "WARN" and "could not be analyzed" in msg
+    # RGB stays FAIL even with gaps
+    assert proofer.check_color({"kind": "pdf", "colors": {"RGB"},
+                                "analysis_gaps": ["x"]})[0] == "FAIL"
+
+
+def test_check_fonts_form_gap_blocks_outlined_pass():
+    st, msg = proofer.check_fonts({"kind": "pdf", "fonts": 0,
+                                   "analysis_gaps": ["form XObject '/Fm1' could not be analyzed: boom"]})
+    assert st == "WARN" and "cannot confirm text is outlined" in msg
+    # no gaps -> PASS unchanged
+    assert proofer.check_fonts({"kind": "pdf", "fonts": 0})[0] == "PASS"
 
 
 # ---------- fix-it instructions (Feature 3) ----------

@@ -220,6 +220,35 @@ function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
   }
 }
 
+// Multiple marked door openings along ONE long graphic (e.g. a conference-room
+// run): each door_marks entry is {x, w, label[, side]} in trim inches from the
+// panel's left, drawn at full trim height. `side` (optional) adds the handle/
+// lock holes at DOOR.edge_offset_in from that latch edge; without it only the
+// opening is marked ("leave it one graphic, mark where the doors are").
+// Geometry mirrors preview_templates.py's door_marks loop term-for-term so the
+// production template can never disagree with the client template.
+function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt) {
+  if (!panel.door_marks) return;
+  var hTrimPt = sPt(panel.h);
+  for (var d = 0; d < panel.door_marks.length; d++) {
+    var dm = panel.door_marks[d];
+    var dmWin  = (dm.w != null) ? dm.w : DOOR.panel_w_in;
+    var dmXin  = (dm.x != null) ? dm.x : 0;
+    var dmLeft = trimLeftXpt + sPt(dmXin);
+    var dmW    = sPt(dmWin);
+    var dmTop  = trimBottomYpt + hTrimPt;
+    strokeRect(doorLayer, dmTop, dmLeft, dmW, hTrimPt, C_DOOR, 2, true);
+    smallText(labelLayer, dmLeft + sPt(1.5), dmTop - sPt(1.5), dm.label || "DOOR", 18, C_DOOR);
+    var dmSide = dm.side;
+    if (dmSide === "left" || dmSide === "right") {
+      var cx = (dmSide === "right") ? (dmLeft + dmW - sPt(DOOR.edge_offset_in))
+                                    : (dmLeft + sPt(DOOR.edge_offset_in));
+      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in));
+      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));
+    }
+  }
+}
+
 function addLabel(layer, xPt, yPt, panel, displayName, maxWidthPt, maxHeightPt) {
   var t = layer.textFrames.add();
   var details = "Trim " + panel.w + '" x ' + panel.h + '"   |   Bleed ' + BLEED_PER_SIDE +
@@ -303,12 +332,21 @@ else {
       var abHpt = hTrimPt + 2 * bleedPt;
 
       // Skip panels too big for one Illustrator artboard (e.g. a 603" hanging
-      // sign — even at half-scale it's ~302", past the ~227" limit). Flag it to
-      // tile/seam separately instead of crashing the whole run.
+      // sign — even at half-scale it's ~302", past the ~227" limit). A panel
+      // flagged oversize_mode:"continuous" is printed as ONE piece by the
+      // vendor (doors marked on the client template); everything else is
+      // flagged to tile/seam separately. Either way, don't crash the run.
       if (abWpt > MAX_AB_PT || abHpt > MAX_AB_PT) {
-        oversized.push(displayName + "  (" + p.w + '" x ' + p.h + '" = ' +
-                       Math.round(abWpt / PT) + '" x ' + Math.round(abHpt / PT) +
-                       '" at ' + (SCALE * 100) + "% — past Illustrator's ~227\" artboard limit; tile/seam separately)");
+        var ovDims = "  (" + p.w + '" x ' + p.h + '" = ' +
+                     Math.round(abWpt / PT) + '" x ' + Math.round(abHpt / PT) +
+                     '" at ' + (SCALE * 100) + "% — past Illustrator's ~227\" artboard limit; ";
+        if (p.oversize_mode === "continuous") {
+          oversized.push(displayName + ovDims +
+                         "printed as ONE continuous piece — build at full size outside Illustrator; " +
+                         "door openings marked on the client template)");
+        } else {
+          oversized.push(displayName + ovDims + "tile/seam separately)");
+        }
         continue;
       }
 
@@ -359,6 +397,9 @@ else {
         drawDoor(lDoor, lLabel, p.door, p, trimLeftXpt, trimBottomYpt);
       }
 
+      // Marked door openings along one long graphic (door_marks)
+      drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt);
+
       // Label (just inside the top-left, below the bleed) — scaled to fit the panel
       addLabel(lLabel, abLeft + bleedPt + sPt(2), abTop - bleedPt - sPt(2), p, displayName,
                wTrimPt - sPt(4), abHpt - sPt(2));
@@ -374,7 +415,7 @@ else {
   alert("Done.\rJob: " + JOB_NAME +
         "\rSpec: " + (SPEC.__source || "built-in") +
         "\rArtboards created: " + built +
-        (oversized.length ? "\r\rSKIPPED (too large for one artboard — tile/seam separately):\r  - " + oversized.join("\r  - ") : "") +
+        (oversized.length ? "\r\rSKIPPED (too large for one artboard — see each item):\r  - " + oversized.join("\r  - ") : "") +
         "\rScale: " + (SCALE * 100) + "%  |  Bleed: " + BLEED_PER_SIDE + '" per side (' + (BLEED_PER_SIDE * 2) + '" total)' +
         "\r\rColors:  cyan = bleed,  black = trim,  magenta = safe area," +
         "\r  orange = keep-clear (fixture/TV/shelf),  green = live art area,  red = door." +

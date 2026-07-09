@@ -60,3 +60,20 @@ def test_parse_json_safe_strips_bom_and_reports_the_parse_error():
     src = _jsx()
     assert re.search(r"replace\(/\^\\uFEFF/", src)          # BOM strip
     assert "Booth spec is not valid JSON: " in src          # parse error text included
+
+
+def test_jsx_ports_door_marks_from_the_python_templates():
+    src = _jsx()
+    assert "function drawDoorMarks" in src
+    assert "drawDoorMarks(lDoor, lLabel, p, trimLeftXpt, trimBottomYpt" in src  # actually called
+    # same defaults the Python side uses: width falls back to the standard door
+    # leaf, holes only for an explicit left/right side
+    assert "DOOR.panel_w_in" in src
+    assert 'dmSide === "left" || dmSide === "right"' in src
+
+
+def test_jsx_continuous_oversize_message_matches_the_flag():
+    src = _jsx()
+    assert 'p.oversize_mode === "continuous"' in src
+    assert "printed as ONE continuous piece" in src
+    assert "tile/seam separately" in src                    # non-continuous keeps its wording

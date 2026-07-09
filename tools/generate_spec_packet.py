@@ -15,6 +15,7 @@ import json, sys, os, html, base64, math
 import proofer
 import branding
 import render
+import spec_validate
 
 RED = branding.RED
 
@@ -198,13 +199,16 @@ def visible_cell(p):
         parts.append(f'Door — handle on the {esc(p["door"])}')
     for z in p.get("zones", []):
         if z.get("kind") == "live":
-            parts.append(f'<b>Live art area:</b> {z["w"]}″ × {z["h"]}″')
+            parts.append(f'<b>Live art area:</b> {esc(z["w"])}″ × {esc(z["h"])}″')
         else:
             parts.append(f'<span class="keep">Keep clear:</span> {esc(z.get("label",""))}')
     return "<br>".join(parts) if parts else '<span class="muted">Full panel</span>'
 
 
 def build_html(spec, final=False):
+    # zone_xy=False: this deck only PRINTS live-area sizes; keep-clear zones may
+    # be label-only (intake drafts seed them that way). Geometry tools are stricter.
+    spec_validate.validate_or_raise(spec, zone_xy=False)
     job = spec.get("job", {})
     st = spec.get("settings", {})
     ppi = st.get("resolution_ppi", {})
@@ -232,7 +236,7 @@ def build_html(spec, final=False):
         note = esc(note_txt) or '<span class="muted">—</span>'
         row_htmls.append(f"""<tr>
           <td class="pname">{esc(p['name'])}</td>
-          <td class="size{' unvsize' if unv else ''}">{p['w']}″ × {p['h']}″{unv_badge}</td>
+          <td class="size{' unvsize' if unv else ''}">{esc(p['w'])}″ × {esc(p['h'])}″{unv_badge}</td>
           <td{fin_cls}>{esc(finish)}{interior}</td>
           <td{ftype_cls}>{esc(ftype)}</td>
           <td class="qty">{esc(qty)}</td>
@@ -248,7 +252,7 @@ def build_html(spec, final=False):
 
     excl = ""
     if excluded:
-        items = "".join(f"<li><b>{esc(e['name'])}</b> — {esc(e.get('reason',''))}</li>" for e in excluded)
+        items = "".join(f"<li><b>{esc(e.get('name', '?'))}</b> — {esc(e.get('reason',''))}</li>" for e in excluded)
         excl = f'<h2>Not in this packet</h2><ul class="plain">{items}</ul>'
 
     banner = ""
@@ -268,7 +272,7 @@ def build_html(spec, final=False):
       <li><b>Scale:</b> {esc(scale_label(sc))}</li>
       <li><b>Bleed:</b> {bleed_bullet(bleed, sc)}</li>
       <li><b>Color:</b> {esc(st.get('color_mode','CMYK / Pantone'))}</li>
-      <li><b>Resolution:</b> {ppi.get('min',120)}–{ppi.get('max',150)} ppi at scale (no more than {ppi.get('max',150)})</li>
+      <li><b>Resolution:</b> {esc(ppi.get('min',120))}–{esc(ppi.get('max',150))} ppi at scale (no more than {esc(ppi.get('max',150))})</li>
       <li><b>Fonts:</b> {esc(st.get('fonts','convert to outlines'))}</li>
       <li><b>Printer marks:</b> {esc(st.get('printer_marks','disabled'))}</li>
       <li><b>Safe margin:</b> keep logos &amp; text ~{esc(st.get('safe_margin_in',4))}″ in from the edges</li>
@@ -460,7 +464,7 @@ def build_html(spec, final=False):
             <div class="ag-h">Accepted File Formats</div>
             <div class="ag-formats">{formats}</div>
             <div class="ag-h">Resolution &amp; Output</div>
-            <ul><li>{ppi.get('min',120)}–{ppi.get('max',150)} ppi at scale (no more than {ppi.get('max',150)})</li>
+            <ul><li>{esc(ppi.get('min',120))}–{esc(ppi.get('max',150))} ppi at scale (no more than {esc(ppi.get('max',150))})</li>
                 <li>Printer marks: {esc(st.get('printer_marks','disabled'))}</li></ul>
             <div class="ag-h">Artwork Submission</div>
             <ul><li>Submit final artwork via {submit}</li></ul>
@@ -603,7 +607,11 @@ def main():
     suffix = "_DRAFT" if draft else ""
     html_path = os.path.abspath(f"{base}_Spec_Packet{suffix}.html")
     pdf_path = os.path.abspath(f"{base}_Spec_Packet{suffix}.pdf")
-    open(html_path, "w").write(build_html(spec, final=final))
+    try:
+        doc = build_html(spec, final=final)   # build BEFORE opening: an invalid
+    except spec_validate.SpecError as e:      # spec must leave NO partial file
+        spec_validate.report_and_exit(e)
+    open(html_path, "w").write(doc)
     print("HTML:", html_path)
     if draft:
         print("⚠  DRAFT packet — not for the client yet. Unresolved: " + "; ".join(reasons)

@@ -143,6 +143,10 @@ def html_to_pdf(html_path, pdf_path, runner=subprocess.Popen):
         pass
     prof = tempfile.mkdtemp(prefix="see_chrome_")
     try:
+        # --no-sandbox kept deliberately: removal could not be verified on this
+        # machine (no Chrome), and CI runners execute Chrome as root where the
+        # sandbox refuses to start. The input is our OWN generated HTML (with
+        # validated/escaped interpolations - see spec_validate), not the web.
         return _run_chrome([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
                             "--no-pdf-header-footer", "--virtual-time-budget=2000",
                             f"--user-data-dir={prof}", f"--print-to-pdf={pdf_path}",

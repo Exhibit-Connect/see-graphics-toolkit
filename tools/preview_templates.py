@@ -15,6 +15,7 @@ Outputs BASE.svg (always) and BASE.png (via macOS qlmanage when available).
 """
 import json, sys, os, glob, math, subprocess, tempfile, shutil, html
 import render
+import spec_validate
 
 PXI = 2.3          # pixels per inch in the preview
 COLS = 5           # panels per row
@@ -146,6 +147,7 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
 
 
 def build_svg(spec):
+    spec_validate.validate_or_raise(spec)   # fail fast, never draw a broken booth
     st = spec.get("settings", {})
     bleed = st.get("bleed_per_side_in", 1.0)
     safe = st.get("safe_margin_in", 4.0)
@@ -198,7 +200,7 @@ def build_svg(spec):
             pbw, pbh = bw(p), bh(p)
             py = y + LBL + (rh - pbh)            # bottom-align panels in the row
             o.append(f'<text x="{x0:.1f}" y="{y+18:.1f}" font-size="12.5" font-weight="700" fill="#111">{esc(p["name"])}</text>')
-            o.append(f'<text x="{x0:.1f}" y="{y+31:.1f}" font-size="10.5" fill="#666">{p["w"]}" × {p["h"]}"</text>')
+            o.append(f'<text x="{x0:.1f}" y="{y+31:.1f}" font-size="10.5" fill="#666">{esc(p["w"])}" × {esc(p["h"])}"</text>')
             o.append(panel_guides_svg(p, st, door, x0, py, PXI))
         y += LBL + rh + GAP
     o.append("</svg>")
@@ -244,7 +246,10 @@ def main():
     print(f"Spec: {spec_path}  ·  job: {job}")
     svg_path = os.path.abspath(out_base + ".svg")
     png_path = os.path.abspath(out_base + ".png")
-    svg, n = build_svg(spec)
+    try:
+        svg, n = build_svg(spec)
+    except spec_validate.SpecError as e:
+        spec_validate.report_and_exit(e)   # one line per problem, exit 2, nothing written
     open(svg_path, "w").write(svg)
     print(f"panels previewed: {n}")
     print("SVG:", svg_path)

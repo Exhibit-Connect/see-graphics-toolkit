@@ -21,6 +21,7 @@ Free / zero-install: pure-Python HTML/SVG, PDF via headless Chrome.
 import json, sys, os, re, html
 import branding
 import render
+import spec_validate
 import preview_templates as pt
 
 MAX_BUILD_IN = 226.0  # Illustrator's ~227" artboard limit, measured at build scale
@@ -139,7 +140,8 @@ def panel_page_html(panel, spec, page, pages, oversized=False):
     continuous = is_continuous(panel)
     if oversized and not continuous:
         art = (f'<div class="oversize">&#9888; This piece is too large for one template '
-               f'({panel.get("w")}" × {panel.get("h")}"). It is printed in sections and seamed together — '
+               f'({html.escape(str(panel.get("w")))}" × {html.escape(str(panel.get("h")))}"). '
+               f'It is printed in sections and seamed together — '
                f'our team will handle the tiling. Build to the finished size + bleed listed, full resolution.</div>')
     else:
         px = fit_px(panel, st)
@@ -197,7 +199,7 @@ def _cover_page(spec, panels, pages):
         else:
             tag = ""
         lis += (f'<tr><td>{i}</td><td><b>{html.escape(str(p.get("name", "?")))}</b>{tag}</td>'
-                f'<td>{html.escape(size)}</td><td>{html.escape(p.get("finish") or "—")}</td></tr>')
+                f'<td>{html.escape(size)}</td><td>{html.escape(str(p.get("finish") or "—"))}</td></tr>')
     return f"""<section class="page">
       {branding.header_html("Client Design Templates")}
       <h1>{html.escape(j.get('name', '') or j.get('client', '') or 'Booth')}</h1>
@@ -278,6 +280,10 @@ def main():
     files = [a for a in args if not a.startswith("--")]
     spec_path = files[0] if files else find_default_spec()
     spec = json.load(open(spec_path))
+    try:
+        spec_validate.validate_or_raise(spec)   # before ANY output is written
+    except spec_validate.SpecError as e:
+        spec_validate.report_and_exit(e)
     spec["__source"] = os.path.basename(spec_path)
     base = os.path.splitext(os.path.basename(spec_path))[0].replace("booth_spec_", "")
     panels = spec.get("panels", [])
@@ -285,7 +291,8 @@ def main():
 
     hp = os.path.abspath(f"{base}_Client_Templates.html")
     pp = os.path.abspath(f"{base}_Client_Templates.pdf")
-    open(hp, "w").write(build_templates_html(spec))
+    doc = build_templates_html(spec)   # build BEFORE opening: no truncated file on error
+    open(hp, "w").write(doc)
     msg = f"panels: {len(panels)}"
     if over:
         seam = [str(p.get("name")) for p in over if not is_continuous(p)]

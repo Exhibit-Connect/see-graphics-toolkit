@@ -226,17 +226,25 @@ def test_resolve_door_standard_fallbacks():
     assert pt.resolve_door_standard({}) is pt.DOOR_DEFAULT                 # neither -> built-in default
 
 
-def test_slot_handle_draws_leaf_without_holes():
-    # a BMatrix (slot) door draws the panel + leaf but NO round holes (slot geometry TBD)
+def test_slot_handle_draws_grip_slot_not_holes():
+    # a BMatrix (slot) door draws the panel + leaf + a vertical grip SLOT (a rect on the
+    # latch edge), and NO round holes; slot geometry comes from the profile's `slot`
     import re
     px = 2.0
     bm = pt.DOOR_PROFILES["bmatrix"]
     panel = {"name": "V", "w": 314.73, "h": 95.2,
              "door_marks": [{"x": 0, "w": 39.06, "label": "D", "side": "right", "leaf": True}]}
     svg = pt.panel_guides_svg(panel, SETTINGS, bm, 0, 0, px)
-    assert svg.count("<circle") == 0                                       # slot handle not drawn yet
-    rects = re.findall(r'<rect [^>]*stroke="' + re.escape(pt.C["door"]), svg)
-    assert len(rects) == 2                                                 # panel + leaf still drawn
+    assert svg.count("<circle") == 0                          # a slot, not round holes
+    rects = re.findall(r'<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="([\d.]+)"[^>]*stroke="'
+                       + re.escape(pt.C["door"]), svg)
+    assert len(rects) == 3                                    # panel (39.06) + leaf (32.9375) + slot
+    slot = min(rects, key=lambda r: float(r[1]))              # the narrowest rect is the slot
+    slot_x, slot_w, slot_h = float(slot[0]), float(slot[1]), float(slot[2])
+    assert abs(slot_w - 1.952 * px) < 0.1 and abs(slot_h - 7.908 * px) < 0.1
+    # the slot rides the leaf's right (latch) edge, inset by the profile's edge_offset
+    leaf_right = (SETTINGS["bleed_per_side_in"] + (39.06 + 32.9375) / 2) * px
+    assert abs((slot_x + slot_w) - (leaf_right - 0.375 * px)) < 0.3
 
 
 # ---------- P1-10: per-panel output safety, honest PDF failures, identity-safe oversized ----------

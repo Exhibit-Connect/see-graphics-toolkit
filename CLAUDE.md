@@ -31,7 +31,7 @@ Tools are **location-independent**: they auto-find `examples/*booth_spec*.json` 
 - Build at **½ scale** (output 200%). **Bleed 1″/side (2″ total).** Safe margin **4″** (spec 3–5″).
 - **CMYK / Pantone**; fonts → outlines; raster **120–150 ppi** at scale; **printer marks off**.
 - **Door geometry** is baked into the generator (the built-in default door: panel 39.125″×95.21″; two holes 4.3125″ in from the latch edge — handle 2.0″ dia @ 37.98″, lock 1.125″ dia @ 41.79″).
-- **Door template by warehouse.** SEE stocks two door systems; pick by which of SEE's two warehouses services the show (whichever is **closer to the show location**): closer to **Orlando → Aluvision** (leaf 33.1875″×91.0625″, round handle/lock holes 1.81″ from the latch edge), closer to **Las Vegas → BMatrix** (leaf 32.9375″×91.375″, vertical slot handle). A booth file selects one with **`"door_template": "aluvision"` (or `"bmatrix"`)**, resolved by `preview_templates.resolve_door_standard` / `DOOR_PROFILES` (mirrored in the `.jsx`); `door_marks` mark the ~39″ door **panel** and `leaf: true` draws the selected door leaf centered inside it. When building a booth file set the template from the show location, and **if the nearest warehouse is ambiguous, ASK — never guess** (a wrong door is print-critical). BMatrix's slot handle is not drawn yet (leaf only) — pending the first Las-Vegas-serviced show.
+- **Door template by warehouse.** SEE stocks two door systems; pick by which of SEE's two warehouses services the show (whichever is **closer to the show location**): closer to **Orlando → Aluvision** (leaf 33.1875″×91.0625″, round handle/lock holes 1.81″ from the latch edge), closer to **Las Vegas → BMatrix** (leaf 32.9375″×91.375″, vertical slot handle). A booth file selects one with **`"door_template": "aluvision"` (or `"bmatrix"`)**, resolved by `preview_templates.resolve_door_standard` / `DOOR_PROFILES` (mirrored in the `.jsx`); `door_marks` mark the ~39″ door **panel** and `leaf: true` draws the selected door leaf centered inside it, with its hardware on the latch edge — round handle/lock **holes** (Aluvision) or a vertical grip **slot** (BMatrix, 1.952″×7.908″), per the profile's `handle_style`. When building a booth file set the template from the show location, and **if the nearest warehouse is ambiguous, ASK — never guess** (a wrong door is print-critical).
 - Template guide colors: **cyan** = bleed · **black** = trim · **magenta** = safe area · **orange** = keep-clear · **green** = live art · **red** = door.
 
 ## Key principles
@@ -76,8 +76,10 @@ No automated Illustrator run exists — after ANY change to `tools/SEE_Wall_Temp
 2. **door_marks:** on a panel carrying `door_marks` (add a demo panel to a copy of the example if
    none has them), each opening shows a dashed red rect at full trim height with its label, plus
    handle/lock holes when the entry sets `side`. An entry with `leaf: true` also draws the actual
-   door leaf (from `door_standard`, e.g. an Aluvision door) centered inside the panel and bottom-
-   anchored, with the handle/lock holes on the leaf's edge rather than the panel's.
+   door leaf (from `door_standard` / the `door_template`) centered inside the panel and bottom-
+   anchored, with hardware on the leaf's edge. Check both door templates: `"door_template":"aluvision"`
+   → round handle+lock holes; `"door_template":"bmatrix"` → a vertical grip slot (and an unknown name
+   aborts the run).
 3. **Side B mirroring:** on a `"sided": "double"` panel with a door and zones, Side B shows the
    door on the MIRRORED hand (left↔right) and each zone at the mirrored x (`w - x - zw`).
    Keep-clear zones appear on BOTH sides (default: over-marking beats art over hardware).

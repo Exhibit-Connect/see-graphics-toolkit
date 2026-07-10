@@ -85,6 +85,8 @@ def test_jsx_ports_door_template_profiles():
     assert "aluvision" in src and "bmatrix" in src
     assert "SPEC.door_template" in src
     assert 'handle_style' in src                       # slot vs holes gate is ported
+    assert "function drawHandle" in src                # holes-or-slot hardware helper
+    assert "DOOR.slot" in src                          # BMatrix grip-slot geometry is drawn
 
 
 def test_jsx_continuous_oversize_message_matches_the_flag():

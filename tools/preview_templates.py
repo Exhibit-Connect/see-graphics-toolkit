@@ -45,9 +45,9 @@ DOOR_DEFAULT = {
 # (or "bmatrix"); resolve_door_standard() turns that into the door geometry. Each
 # entry is a door LEAF (the actual door that sits inside a ~39" door PANEL/bay marked
 # by door_marks). `handle_style` is "holes" (round handle+lock cutouts, e.g. Aluvision)
-# or "slot" (a vertical slot handle, e.g. BMatrix). NOTE: the BMatrix slot geometry is
-# not yet measured, so a bmatrix door draws the leaf but NOT the handle until we pin the
-# slot on our first Las-Vegas-serviced show (never guessed).
+# or "slot" (a vertical grip slot, e.g. BMatrix — `slot` gives its w/h, gap from the
+# latch edge, and vertical center from the floor). Both are measured from the vector
+# door-cut templates SEE supplied (Aluvision_DoorCut Right.ai / BMatrixDoorCutout_V4.pdf).
 DOOR_PROFILES = {
     "aluvision": {
         "system": "Aluvision", "warehouse": "Orlando", "handle_style": "holes",
@@ -58,8 +58,9 @@ DOOR_PROFILES = {
     "bmatrix": {
         "system": "BMatrix", "warehouse": "Las Vegas", "handle_style": "slot",
         "panel_w_in": 32.9375, "panel_h_in": 91.375,
-        # slot handle geometry TBD — measure from BMatrixDoorCutout_V4 / the vector file
-        # (or confirm with Marc) on the first Las-Vegas-serviced show, then add it here.
+        # vertical grip slot (from BMatrixDoorCutout_V4.pdf vector paths): 1.952 x 7.908,
+        # its near edge 0.375" in from the latch edge, centered 37.95" up from the floor.
+        "slot": {"w_in": 1.952, "h_in": 7.908, "edge_offset_in": 0.375, "y_from_floor_in": 37.95},
     },
 }
 
@@ -138,11 +139,23 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
     # the client template can never silently omit a door the production one draws.
     door_standard = door_standard or DOOR_DEFAULT
 
-    def _holes(cx, stroke_w):
-        # only round handle/lock cutouts (e.g. Aluvision); a "slot" handle (BMatrix) is
-        # not drawn yet — the leaf is still marked, just without the handle geometry
-        if door_standard.get("handle_style", "holes") != "holes":
-            return []
+    def _handle(x0, w0, side, stroke_w):
+        """Door hardware on the latch edge of a leaf spanning [x0, x0+w0] (px). Which
+        hardware comes from door_standard's `handle_style`: round handle + lock holes
+        (Aluvision / the SEE default) or a vertical grip `slot` (BMatrix)."""
+        if door_standard.get("handle_style", "holes") == "slot":
+            slot = door_standard.get("slot")
+            if not slot:
+                return []
+            sw = slot.get("w_in", 2.0) * px
+            sh = slot.get("h_in", 8.0) * px
+            soff = slot.get("edge_offset_in", 0.0) * px          # gap from the latch edge to the slot
+            sx = (x0 + soff) if side == "left" else (x0 + w0 - soff - sw)
+            cy = tby - slot.get("y_from_floor_in", 38.0) * px    # slot's vertical CENTER
+            return [f'<rect x="{sx:.1f}" y="{cy - sh / 2:.1f}" width="{sw:.1f}" height="{sh:.1f}" '
+                    f'fill="none" stroke="{C["door"]}" stroke-width="{stroke_w}"/>']
+        off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
+        cx = (x0 + off) if side == "left" else (x0 + w0 - off)
         frags = []
         for key in ("handle", "lock"):
             hole = door_standard.get(key, DOOR_DEFAULT[key])
@@ -166,19 +179,17 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
         dl = tlx if side == "left" else (tlx + tw - dW)
         dtop = tby - dH
         o.append(f'<rect x="{dl:.1f}" y="{dtop:.1f}" width="{dW:.1f}" height="{dH:.1f}" fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
-        off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
-        cx = (dl + off) if side == "left" else (dl + dW - off)
-        o.extend(_holes(cx, 1.6))
+        o.extend(_handle(dl, dW, side, 1.6))
         o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
     # Multiple marked doors along ONE long graphic (e.g. the conference-room run): each
     # is {x, w, label[, side, leaf]} in trim inches from the left, where `w` is the door
-    # PANEL / bay width, drawn full trim height. `side` (optional) puts the handle/lock
-    # holes on that latch edge; without it we just mark the opening (per production:
-    # "leave it one graphic, mark where the doors are"). `leaf` (optional, truthy) draws
-    # the ACTUAL door leaf from door_standard (e.g. an Aluvision door, 33.1875 x 91.0625)
-    # CENTERED inside the panel and bottom-anchored on the floor — so a wide (~39") door
-    # panel reads as a panel with the real, narrower/shorter door inside it; the handle/
-    # lock holes then land on the LEAF's latch edge, not the panel's.
+    # PANEL / bay width, drawn full trim height. `side` (optional) puts the door hardware
+    # (round holes or a slot, per door_standard.handle_style) on that latch edge; without
+    # it we just mark the opening (per production: "leave it one graphic, mark where the
+    # doors are"). `leaf` (optional, truthy) draws the ACTUAL door leaf from door_standard
+    # (e.g. an Aluvision door, 33.1875 x 91.0625) CENTERED inside the panel and bottom-
+    # anchored on the floor — so a wide (~39") door panel reads as a panel with the real,
+    # narrower/shorter door inside it; the hardware then lands on the LEAF's latch edge.
     for dm in panel.get("door_marks", []):
         dmw = dm.get("w", door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"])) * px
         dmx = tlx + dm.get("x", 0) * px
@@ -201,9 +212,7 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
                   f'expected lowercase "left" or "right"; opening marked but holes NOT drawn',
                   file=sys.stderr)
         if dside in ("left", "right"):
-            off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
-            cx = (hole_x + off) if dside == "left" else (hole_x + hole_w - off)
-            o.extend(_holes(cx, 1.4))
+            o.extend(_handle(hole_x, hole_w, dside, 1.4))
     return "\n".join(o)
 
 

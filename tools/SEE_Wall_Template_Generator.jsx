@@ -128,7 +128,8 @@ var DOOR_PROFILES = {
   aluvision: { panel_w_in: 33.1875, panel_h_in: 91.0625, edge_offset_in: 1.81,
                handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
                lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }, handle_style: "holes" },
-  bmatrix:   { panel_w_in: 32.9375, panel_h_in: 91.375, handle_style: "slot" }
+  bmatrix:   { panel_w_in: 32.9375, panel_h_in: 91.375, handle_style: "slot",
+               slot: { w_in: 1.952, h_in: 7.908, edge_offset_in: 0.375, y_from_floor_in: 37.95 } }
 };
 var DOOR;
 if (SPEC && SPEC.door_template) {
@@ -210,6 +211,24 @@ function drawHole(layer, cxPt, cyPt, diaPt) {
   return e;
 }
 
+// Door hardware on the latch edge of a leaf spanning [x0Pt, x0Pt+w0Pt]: round handle +
+// lock holes (DOOR.handle_style "holes", e.g. Aluvision) or a vertical grip slot
+// ("slot", e.g. BMatrix). Mirrors preview_templates._handle term-for-term.
+function drawHandle(layer, x0Pt, w0Pt, side, trimBottomYpt) {
+  if ((DOOR.handle_style || "holes") === "slot") {
+    if (!DOOR.slot) return;
+    var sw = sPt(DOOR.slot.w_in), sh = sPt(DOOR.slot.h_in);
+    var soff = sPt(DOOR.slot.edge_offset_in || 0);         // gap from the latch edge to the slot
+    var sLeft = (side === "left") ? (x0Pt + soff) : (x0Pt + w0Pt - soff - sw);
+    var cy = trimBottomYpt + sPt(DOOR.slot.y_from_floor_in || 38);   // slot vertical center
+    strokeRect(layer, cy + sh / 2, sLeft, sw, sh, C_DOOR, 2, true);  // top = center + h/2
+    return;
+  }
+  var cx = (side === "right") ? (x0Pt + w0Pt - sPt(DOOR.edge_offset_in)) : (x0Pt + sPt(DOOR.edge_offset_in));
+  drawHole(layer, cx, trimBottomYpt + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in)); // handle (lower)
+  drawHole(layer, cx, trimBottomYpt + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));   // lock (upper)
+}
+
 // Door cut + the two real handle/lock holes (geometry from the booth spec).
 function drawDoor(layer, labelLayer, side, panel, trimLeftXpt, trimBottomYpt) {
   var dW = sPt(DOOR.panel_w_in);
@@ -219,12 +238,8 @@ function drawDoor(layer, labelLayer, side, panel, trimLeftXpt, trimBottomYpt) {
   var dBottom = trimBottomYpt;          // door sits on the floor
   var dTop    = dBottom + dH;
   strokeRect(layer, dTop, dLeft, dW, dH, C_DOOR, 2, true);
-  if ((DOOR.handle_style || "holes") === "holes") {   // round holes (Aluvision); a "slot" handle (BMatrix) is not drawn yet
-    var holeCx = (side === "right") ? (dLeft + dW - sPt(DOOR.edge_offset_in)) : (dLeft + sPt(DOOR.edge_offset_in));
-    drawHole(layer, holeCx, dBottom + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in)); // handle (lower)
-    drawHole(layer, holeCx, dBottom + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));   // lock (upper)
-  }
-  smallText(labelLayer, dLeft + sPt(2), dTop - sPt(2), "DOOR (" + side + ") - cut + handle/lock holes", 18, C_DOOR);
+  drawHandle(layer, dLeft, dW, side, dBottom);   // round holes (Aluvision) or grip slot (BMatrix)
+  smallText(labelLayer, dLeft + sPt(2), dTop - sPt(2), "DOOR (" + side + ") - cut + handle hardware", 18, C_DOOR);
 }
 
 // Keep-clear / live-area rectangles marked on the panel. `mirrored` (Side B of
@@ -282,11 +297,8 @@ function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt,
       strokeRect(doorLayer, trimBottomYpt + lH, lLeft, lW, lH, C_DOOR, 1, true);
       holeLeft = lLeft; holeW = lW;
     }
-    if ((dmSide === "left" || dmSide === "right") && (DOOR.handle_style || "holes") === "holes") {
-      var cx = (dmSide === "right") ? (holeLeft + holeW - sPt(DOOR.edge_offset_in))
-                                    : (holeLeft + sPt(DOOR.edge_offset_in));
-      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in));
-      drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));
+    if (dmSide === "left" || dmSide === "right") {
+      drawHandle(doorLayer, holeLeft, holeW, dmSide, trimBottomYpt);
     }
   }
 }

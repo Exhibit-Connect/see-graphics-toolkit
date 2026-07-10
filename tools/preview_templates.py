@@ -38,6 +38,45 @@ DOOR_DEFAULT = {
     "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79},
 }
 
+# The two physical door systems SEE stocks, keyed by warehouse: a show serviced by
+# the ORLANDO warehouse uses the Aluvision door, one serviced by LAS VEGAS uses the
+# BMatrix door (pick by which warehouse is closer to the show — see the warehouse
+# rule in CLAUDE.md). A booth file selects one with `"door_template": "aluvision"`
+# (or "bmatrix"); resolve_door_standard() turns that into the door geometry. Each
+# entry is a door LEAF (the actual door that sits inside a ~39" door PANEL/bay marked
+# by door_marks). `handle_style` is "holes" (round handle+lock cutouts, e.g. Aluvision)
+# or "slot" (a vertical slot handle, e.g. BMatrix). NOTE: the BMatrix slot geometry is
+# not yet measured, so a bmatrix door draws the leaf but NOT the handle until we pin the
+# slot on our first Las-Vegas-serviced show (never guessed).
+DOOR_PROFILES = {
+    "aluvision": {
+        "system": "Aluvision", "warehouse": "Orlando", "handle_style": "holes",
+        "panel_w_in": 33.1875, "panel_h_in": 91.0625, "edge_offset_in": 1.81,
+        "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
+        "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79},
+    },
+    "bmatrix": {
+        "system": "BMatrix", "warehouse": "Las Vegas", "handle_style": "slot",
+        "panel_w_in": 32.9375, "panel_h_in": 91.375,
+        # slot handle geometry TBD — measure from BMatrixDoorCutout_V4 / the vector file
+        # (or confirm with Marc) on the first Las-Vegas-serviced show, then add it here.
+    },
+}
+
+
+def resolve_door_standard(spec):
+    """The door geometry for a booth. An explicit `door_template` name (looked up in
+    DOOR_PROFILES, case-insensitive) wins; else an inline `door_standard`; else the
+    built-in SEE default. Raises ValueError on an unknown door_template so a typo fails
+    fast instead of silently falling back to the wrong door."""
+    name = spec.get("door_template")
+    if name:
+        key = str(name).strip().lower()
+        if key not in DOOR_PROFILES:
+            raise ValueError(f"unknown door_template {name!r}; expected one of {sorted(DOOR_PROFILES)}")
+        return DOOR_PROFILES[key]
+    return spec.get("door_standard") or DOOR_DEFAULT
+
 
 def find_default_spec():
     """Booth spec auto-discovery for the DEMO-friendly tools (previews, spec
@@ -100,6 +139,10 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
     door_standard = door_standard or DOOR_DEFAULT
 
     def _holes(cx, stroke_w):
+        # only round handle/lock cutouts (e.g. Aluvision); a "slot" handle (BMatrix) is
+        # not drawn yet — the leaf is still marked, just without the handle geometry
+        if door_standard.get("handle_style", "holes") != "holes":
+            return []
         frags = []
         for key in ("handle", "lock"):
             hole = door_standard.get(key, DOOR_DEFAULT[key])
@@ -127,10 +170,15 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
         cx = (dl + off) if side == "left" else (dl + dW - off)
         o.extend(_holes(cx, 1.6))
         o.append(f'<text x="{dl+3:.1f}" y="{dtop+12:.1f}" font-size="8.5" font-weight="700" fill="{C["door"]}">DOOR ({side[0].upper()})</text>')
-    # Multiple marked doors on one long graphic (e.g. the conference-room run): each
-    # is {x, w, label[, side]} in trim inches from the left, full trim height. `side`
-    # (optional) adds the handle/lock holes on that latch edge; without it we just
-    # mark the opening (per production: "leave it one graphic, mark where the doors are").
+    # Multiple marked doors along ONE long graphic (e.g. the conference-room run): each
+    # is {x, w, label[, side, leaf]} in trim inches from the left, where `w` is the door
+    # PANEL / bay width, drawn full trim height. `side` (optional) puts the handle/lock
+    # holes on that latch edge; without it we just mark the opening (per production:
+    # "leave it one graphic, mark where the doors are"). `leaf` (optional, truthy) draws
+    # the ACTUAL door leaf from door_standard (e.g. an Aluvision door, 33.1875 x 91.0625)
+    # CENTERED inside the panel and bottom-anchored on the floor — so a wide (~39") door
+    # panel reads as a panel with the real, narrower/shorter door inside it; the handle/
+    # lock holes then land on the LEAF's latch edge, not the panel's.
     for dm in panel.get("door_marks", []):
         dmw = dm.get("w", door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"])) * px
         dmx = tlx + dm.get("x", 0) * px
@@ -138,6 +186,15 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
                  f'fill="none" stroke="{C["door"]}" stroke-width="1.8" stroke-dasharray="7 4"/>')
         o.append(f'<text x="{dmx+3:.1f}" y="{tty+12:.1f}" font-size="8.5" font-weight="700" '
                  f'fill="{C["door"]}">{esc(dm.get("label", "DOOR"))}</text>')
+        hole_x, hole_w = dmx, dmw
+        if dm.get("leaf"):
+            lw = door_standard.get("panel_w_in", DOOR_DEFAULT["panel_w_in"]) * px
+            lh = door_standard.get("panel_h_in", DOOR_DEFAULT["panel_h_in"]) * px
+            lx = dmx + (dmw - lw) / 2                       # centered in the panel
+            ly = tby - lh                                   # bottom-anchored (sits on the floor)
+            o.append(f'<rect x="{lx:.1f}" y="{ly:.1f}" width="{lw:.1f}" height="{lh:.1f}" '
+                     f'fill="none" stroke="{C["door"]}" stroke-width="1.4" stroke-dasharray="4 3"/>')
+            hole_x, hole_w = lx, lw                         # holes ride the leaf, not the panel
         dside = dm.get("side")
         if dside and dside not in ("left", "right"):
             print(f'WARNING: panel "{panel.get("name", "?")}": unrecognized door_marks side "{dside}" — '
@@ -145,7 +202,7 @@ def panel_guides_svg(panel, settings, door_standard, x0, top, px):
                   file=sys.stderr)
         if dside in ("left", "right"):
             off = door_standard.get("edge_offset_in", DOOR_DEFAULT["edge_offset_in"]) * px
-            cx = (dmx + off) if dside == "left" else (dmx + dmw - off)
+            cx = (hole_x + off) if dside == "left" else (hole_x + hole_w - off)
             o.extend(_holes(cx, 1.4))
     return "\n".join(o)
 
@@ -155,7 +212,7 @@ def build_svg(spec):
     st = spec.get("settings", {})
     bleed = st.get("bleed_per_side_in", 1.0)
     safe = st.get("safe_margin_in", 4.0)
-    door = spec.get("door_standard", {})
+    door = resolve_door_standard(spec)
     panels = spec.get("panels", [])
     job = (spec.get("job", {}) or {}).get("name", "Booth")
 

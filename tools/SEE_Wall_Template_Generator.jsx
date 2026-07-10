@@ -119,11 +119,28 @@ var SCALE         = (ST.scale != null) ? ST.scale : 0.5;
 var BLEED_PER_SIDE = (ST.bleed_per_side_in != null) ? ST.bleed_per_side_in : 1.0;
 var SAFE_MARGIN   = (ST.safe_margin_in != null) ? ST.safe_margin_in : 4.0;
 var PANELS        = (SPEC && SPEC.panels) || [];
-var DOOR          = (SPEC && SPEC.door_standard) || {
-  panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
-  handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
-  lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
+// SEE's two door systems, keyed by warehouse (Orlando -> Aluvision, Las Vegas ->
+// BMatrix). A booth file picks one with SPEC.door_template; else an inline
+// door_standard; else the built-in default. Mirrors preview_templates.DOOR_PROFILES /
+// resolve_door_standard. handle_style "slot" (BMatrix) draws the leaf but not the
+// handle yet (slot geometry TBD).
+var DOOR_PROFILES = {
+  aluvision: { panel_w_in: 33.1875, panel_h_in: 91.0625, edge_offset_in: 1.81,
+               handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
+               lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }, handle_style: "holes" },
+  bmatrix:   { panel_w_in: 32.9375, panel_h_in: 91.375, handle_style: "slot" }
 };
+var DOOR;
+if (SPEC && SPEC.door_template) {
+  DOOR = DOOR_PROFILES[String(SPEC.door_template).toLowerCase()];
+  if (!DOOR) { alert("Unknown door_template: " + SPEC.door_template + "\nExpected aluvision or bmatrix."); throw new Error("bad door_template"); }
+} else {
+  DOOR = (SPEC && SPEC.door_standard) || {
+    panel_w_in: 39.125, panel_h_in: 95.21, edge_offset_in: 4.3125,
+    handle: { dia_in: 2.0, y_from_floor_in: 37.98 },
+    lock:   { dia_in: 1.125, y_from_floor_in: 41.79 }
+  };
+}
 
 // =====================================================================
 var PT       = 72;                 // points per inch
@@ -202,9 +219,11 @@ function drawDoor(layer, labelLayer, side, panel, trimLeftXpt, trimBottomYpt) {
   var dBottom = trimBottomYpt;          // door sits on the floor
   var dTop    = dBottom + dH;
   strokeRect(layer, dTop, dLeft, dW, dH, C_DOOR, 2, true);
-  var holeCx = (side === "right") ? (dLeft + dW - sPt(DOOR.edge_offset_in)) : (dLeft + sPt(DOOR.edge_offset_in));
-  drawHole(layer, holeCx, dBottom + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in)); // handle (lower)
-  drawHole(layer, holeCx, dBottom + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));   // lock (upper)
+  if ((DOOR.handle_style || "holes") === "holes") {   // round holes (Aluvision); a "slot" handle (BMatrix) is not drawn yet
+    var holeCx = (side === "right") ? (dLeft + dW - sPt(DOOR.edge_offset_in)) : (dLeft + sPt(DOOR.edge_offset_in));
+    drawHole(layer, holeCx, dBottom + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in)); // handle (lower)
+    drawHole(layer, holeCx, dBottom + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));   // lock (upper)
+  }
   smallText(labelLayer, dLeft + sPt(2), dTop - sPt(2), "DOOR (" + side + ") - cut + handle/lock holes", 18, C_DOOR);
 }
 
@@ -227,10 +246,13 @@ function drawZones(zoneLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt, mir
 }
 
 // Multiple marked door openings along ONE long graphic (e.g. a conference-room
-// run): each door_marks entry is {x, w, label[, side]} in trim inches from the
-// panel's left, drawn at full trim height. `side` (optional) adds the handle/
-// lock holes at DOOR.edge_offset_in from that latch edge; without it only the
-// opening is marked ("leave it one graphic, mark where the doors are").
+// run): each door_marks entry is {x, w, label[, side, leaf]} in trim inches from the
+// panel's left, where `w` is the door PANEL/bay width (drawn full trim height). `side`
+// (optional) adds the handle/lock holes at DOOR.edge_offset_in from that latch edge;
+// without it only the opening is marked ("leave it one graphic, mark where the doors
+// are"). `leaf` (optional, truthy) draws the ACTUAL door leaf (DOOR = door_standard,
+// e.g. an Aluvision door 33.1875 x 91.0625) centered in the panel, bottom-anchored on
+// the floor; the handle/lock holes then land on the LEAF's latch edge, not the panel's.
 // Geometry mirrors preview_templates.py's door_marks loop term-for-term so the
 // production template can never disagree with the client template. `mirrored`
 // (Side B) flips each opening's x to w - x - dmw and swaps the latch side.
@@ -249,12 +271,20 @@ function drawDoorMarks(doorLayer, labelLayer, panel, trimLeftXpt, trimBottomYpt,
     }
     var dmLeft = trimLeftXpt + sPt(dmXin);
     var dmW    = sPt(dmWin);
-    var dmTop  = trimBottomYpt + hTrimPt;
+    var dmTop  = trimBottomYpt + hTrimPt;               // the door PANEL/bay, full trim height
     strokeRect(doorLayer, dmTop, dmLeft, dmW, hTrimPt, C_DOOR, 2, true);
     smallText(labelLayer, dmLeft + sPt(1.5), dmTop - sPt(1.5), dm.label || "DOOR", 18, C_DOOR);
-    if (dmSide === "left" || dmSide === "right") {
-      var cx = (dmSide === "right") ? (dmLeft + dmW - sPt(DOOR.edge_offset_in))
-                                    : (dmLeft + sPt(DOOR.edge_offset_in));
+    var holeLeft = dmLeft, holeW = dmW;
+    if (dm.leaf) {                                       // actual door leaf, centered + bottom-anchored
+      var lW = sPt(DOOR.panel_w_in);
+      var lH = sPt(DOOR.panel_h_in);
+      var lLeft = dmLeft + (dmW - lW) / 2;
+      strokeRect(doorLayer, trimBottomYpt + lH, lLeft, lW, lH, C_DOOR, 1, true);
+      holeLeft = lLeft; holeW = lW;
+    }
+    if ((dmSide === "left" || dmSide === "right") && (DOOR.handle_style || "holes") === "holes") {
+      var cx = (dmSide === "right") ? (holeLeft + holeW - sPt(DOOR.edge_offset_in))
+                                    : (holeLeft + sPt(DOOR.edge_offset_in));
       drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.handle.y_from_floor_in), sPt(DOOR.handle.dia_in));
       drawHole(doorLayer, cx, trimBottomYpt + sPt(DOOR.lock.y_from_floor_in),   sPt(DOOR.lock.dia_in));
     }

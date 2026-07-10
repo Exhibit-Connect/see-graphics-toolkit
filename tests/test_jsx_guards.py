@@ -70,6 +70,21 @@ def test_jsx_ports_door_marks_from_the_python_templates():
     # leaf, holes only for an explicit left/right side
     assert "DOOR.panel_w_in" in src
     assert 'dmSide === "left" || dmSide === "right"' in src
+    # the nested door leaf (a real door centered inside a wider panel, e.g. an
+    # Aluvision door in a ~39" bay) must be ported too, or the production template
+    # would draw only the panel and drift from the client template
+    assert "dm.leaf" in src
+
+
+def test_jsx_ports_door_template_profiles():
+    # the warehouse-keyed door profiles + door_template resolution must exist in the
+    # .jsx too (mirrors preview_templates.DOOR_PROFILES / resolve_door_standard) so a
+    # booth file's `door_template` picks the same door in production as in the preview
+    src = _jsx()
+    assert "DOOR_PROFILES" in src
+    assert "aluvision" in src and "bmatrix" in src
+    assert "SPEC.door_template" in src
+    assert 'handle_style' in src                       # slot vs holes gate is ported
 
 
 def test_jsx_continuous_oversize_message_matches_the_flag():

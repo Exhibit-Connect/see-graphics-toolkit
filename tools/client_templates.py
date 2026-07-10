@@ -136,9 +136,10 @@ def _howto():
 
 def panel_page_html(panel, spec, page, pages, oversized=False):
     st = spec.get("settings", {})
-    # No door_standard in the spec -> the .jsx's built-in door (pt.DOOR_DEFAULT),
-    # so this client template draws the same door the production template draws.
-    door = spec.get("door_standard") or pt.DOOR_DEFAULT
+    # A `door_template` name (aluvision/bmatrix) or an inline `door_standard` resolves
+    # to the door geometry; with neither, the .jsx's built-in door (pt.DOOR_DEFAULT) is
+    # used, so this client template draws the same door the production template draws.
+    door = pt.resolve_door_standard(spec)
     name = panel.get("name", "?")
     cap = "".join(f'<tr><td class="cl">{html.escape(l)}</td><td class="cv">{html.escape(str(v))}</td></tr>'
                   for l, v in caption_rows(panel, st))

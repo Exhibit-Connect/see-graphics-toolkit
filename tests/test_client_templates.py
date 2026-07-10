@@ -147,6 +147,98 @@ def test_continuous_banner_omits_door_clause_when_no_doors():
     assert "Door openings are marked" not in html
 
 
+ALUVISION = {"panel_w_in": 33.1875, "panel_h_in": 91.0625, "edge_offset_in": 1.81,
+             "handle": {"dia_in": 2.0, "y_from_floor_in": 37.98},
+             "lock": {"dia_in": 1.125, "y_from_floor_in": 41.79}}
+
+
+def _door_leaf_svg():
+    import re
+    px = 2.0
+    panel = {"name": "N", "w": 314.73, "h": 95.2,
+             "door_marks": [{"x": 0, "w": 39.06, "label": "D", "side": "right", "leaf": True}]}
+    svg = pt.panel_guides_svg(panel, SETTINGS, ALUVISION, 0, 0, px)
+    rects = re.findall(r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" '
+                       r'fill="none" stroke="' + re.escape(pt.C["door"]), svg)
+    return svg, rects, px
+
+
+def test_door_mark_leaf_draws_panel_with_centered_inner_door():
+    # a door PANEL (bay) with leaf:true draws the panel opening (full trim height) AND
+    # the actual door leaf from door_standard, centered inside it and bottom-anchored
+    svg, rects, px = _door_leaf_svg()
+    assert len(rects) == 2                                       # panel + leaf
+    panel_r = max(rects, key=lambda r: float(r[2]))             # wider  = the 39" panel
+    leaf_r  = min(rects, key=lambda r: float(r[2]))             # narrower = the leaf
+    assert abs(float(panel_r[2]) - 39.06 * px) < 0.2
+    assert abs(float(leaf_r[2]) - 33.1875 * px) < 0.2
+    assert float(leaf_r[3]) < float(panel_r[3])                # leaf shorter than the full panel
+    panel_cx = float(panel_r[0]) + float(panel_r[2]) / 2       # leaf centered in the panel
+    leaf_cx  = float(leaf_r[0]) + float(leaf_r[2]) / 2
+    assert abs(panel_cx - leaf_cx) < 0.5
+    assert svg.count("<circle") == 2                            # handle + lock, on the leaf
+
+
+def test_door_mark_leaf_holes_ride_the_leaf_edge():
+    # with leaf:true the handle/lock holes sit on the LEAF's latch edge (inset by the
+    # frame reveal), NOT on the wider panel edge
+    import re
+    svg, _, px = _door_leaf_svg()
+    cx = float(re.search(r'<circle cx="([\d.]+)"', svg).group(1))
+    tlx = SETTINGS["bleed_per_side_in"] * px                    # trim/panel left
+    leaf_x = tlx + (39.06 - 33.1875) / 2 * px                   # centered leaf's left edge
+    expected = leaf_x + 33.1875 * px - 1.81 * px               # side right -> leaf right edge - offset
+    assert abs(cx - expected) < 0.5
+    assert cx < (tlx + 39.06 * px) - 1.81 * px - 1             # inset from the panel edge
+
+
+def test_door_mark_without_leaf_is_single_opening():
+    # backward compatible: no `leaf` -> one full-height opening at dm.w, holes on its edge
+    import re
+    px = 2.0
+    panel = {"name": "M", "w": 588.15, "h": 95.2,
+             "door_marks": [{"x": 100, "w": 39.06, "label": "D", "side": "left"}]}
+    svg = pt.panel_guides_svg(panel, SETTINGS, ALUVISION, 0, 0, px)
+    rects = re.findall(r'<rect x="[\d.]+" y="[\d.]+" width="([\d.]+)" height="[\d.]+" '
+                       r'fill="none" stroke="' + re.escape(pt.C["door"]), svg)
+    assert len(rects) == 1                                      # just the opening, no inner leaf
+    assert abs(float(rects[0]) - 39.06 * px) < 0.2
+
+
+def test_resolve_door_standard_by_template():
+    # a `door_template` name resolves (case-insensitively) to the built-in profile
+    alu = pt.resolve_door_standard({"door_template": "aluvision"})
+    assert alu["panel_w_in"] == 33.1875 and alu["panel_h_in"] == 91.0625
+    assert alu["edge_offset_in"] == 1.81 and alu["handle_style"] == "holes"
+    bm = pt.resolve_door_standard({"door_template": "BMatrix"})
+    assert bm["panel_w_in"] == 32.9375 and bm["handle_style"] == "slot"
+
+
+def test_resolve_door_standard_unknown_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        pt.resolve_door_standard({"door_template": "acme-doors"})
+
+
+def test_resolve_door_standard_fallbacks():
+    inline = {"panel_w_in": 40, "panel_h_in": 90}
+    assert pt.resolve_door_standard({"door_standard": inline}) is inline   # inline wins when no template
+    assert pt.resolve_door_standard({}) is pt.DOOR_DEFAULT                 # neither -> built-in default
+
+
+def test_slot_handle_draws_leaf_without_holes():
+    # a BMatrix (slot) door draws the panel + leaf but NO round holes (slot geometry TBD)
+    import re
+    px = 2.0
+    bm = pt.DOOR_PROFILES["bmatrix"]
+    panel = {"name": "V", "w": 314.73, "h": 95.2,
+             "door_marks": [{"x": 0, "w": 39.06, "label": "D", "side": "right", "leaf": True}]}
+    svg = pt.panel_guides_svg(panel, SETTINGS, bm, 0, 0, px)
+    assert svg.count("<circle") == 0                                       # slot handle not drawn yet
+    rects = re.findall(r'<rect [^>]*stroke="' + re.escape(pt.C["door"]), svg)
+    assert len(rects) == 2                                                 # panel + leaf still drawn
+
+
 # ---------- P1-10: per-panel output safety, honest PDF failures, identity-safe oversized ----------
 import json
 import os

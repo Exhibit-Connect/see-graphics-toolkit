@@ -11,8 +11,10 @@ Two modes:
     prominent disclaimer banner + a 3-option client sign-off + a consistent
     footer (prepped/QC/job#/version/fulfillment/page).
   * WHOLE JOB (several artwork files, or a folder, or --book): ONE multi-page
-    PDF = a COVER/SUMMARY page (logo + job info + a table of every item +
-    review instructions) followed by one page per item, with real Page X of Y.
+    PDF = a COVER/SUMMARY page (logo + job info INCLUDING the prepped/QC/job#/
+    version/fulfillment section — shown ONCE here, not repeated per page — plus
+    a table of every item + review instructions) followed by one page per item,
+    each with just a Page X of Y footer.
 
 Every proof is logged to proof_log.xlsx. Approve a single item to stamp + lock
 the record; it refuses to approve a FAIL, or anything still carrying a
@@ -360,41 +362,41 @@ CSS_PROOF = f"""
   .page {{ page-break-after: always; }}
   .page:last-child {{ page-break-after: auto; }}
   .pill {{ background:{RED}; color:#fff; display:inline-block; padding:5px 14px; border-radius:16px; font-weight:700; font-size:11px; }}
-  h1 {{ font-size:19px; margin:9px 0 1px; }}
+  h1 {{ font-size:19px; margin:6px 0 1px; }}
   .meta {{ color:#555; font-size:11px; margin:1px 0 0; }}
   .verdict {{ display:inline-block; color:#fff; padding:4px 12px; border-radius:7px; font-weight:700; font-size:13px; }}
   .legend {{ font-size:10px; color:#666; margin-left:8px; }}
   .legend .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 3px 0 9px; vertical-align:baseline; }}
-  .banner {{ margin:11px 0; padding:9px 13px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
-            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.35; }}
-  .caution {{ margin:11px 0; padding:9px 13px; background:#fde8e8; border:1px solid {RED}; border-left:6px solid {RED};
-             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.35; }}
-  .cols {{ display:flex; gap:15px; margin-top:6px; }}
+  .banner {{ margin:6px 0; padding:6px 12px; background:#FFF4E5; border:1px solid #F7941E; border-left:6px solid #F7941E;
+            border-radius:5px; color:#7a4a00; font-size:11px; font-weight:600; line-height:1.3; }}
+  .caution {{ margin:6px 0; padding:6px 12px; background:#fde8e8; border:1px solid {RED}; border-left:6px solid {RED};
+             border-radius:5px; color:#7a0d12; font-size:11px; font-weight:700; line-height:1.3; }}
+  .cols {{ display:flex; gap:15px; margin-top:4px; }}
   .art {{ flex:0 0 40%; border:1px solid #ddd; border-radius:6px; padding:6px; text-align:center; background:#fafafa; align-self:flex-start; }}
-  .art img {{ max-width:100%; max-height:330px; }}
+  .art img {{ max-width:100%; max-height:300px; }}
   .noimg {{ color:#999; padding:40px 0; }}
   .right {{ flex:1; }}
   .blk {{ font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#888; font-weight:700; margin:0 0 4px; }}
   table {{ width:100%; border-collapse:collapse; }}
-  table.spec {{ margin-bottom:13px; }}
-  table.spec td {{ padding:4px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }}
+  table.spec {{ margin-bottom:8px; }}
+  table.spec td {{ padding:3px 8px; border-bottom:1px solid #eee; font-size:11px; vertical-align:top; }}
   td.sl {{ color:#666; width:42%; }}
   td.sv {{ font-weight:700; }}
   table.chk th {{ background:#f3f3f3; text-align:left; padding:5px 8px; border-bottom:2px solid #ccc; font-size:9.5px; text-transform:uppercase; }}
-  table.chk td {{ padding:5px 8px; border-bottom:1px solid #ececec; vertical-align:top; }}
+  table.chk td {{ padding:3px 8px; border-bottom:1px solid #ececec; vertical-align:top; }}
   td.ck {{ font-weight:700; width:20%; }}
   .b {{ color:#fff; padding:2px 9px; border-radius:10px; font-weight:700; font-size:9.5px; }}
   .msg {{ font-size:10px; }}
   ol.fixlist {{ margin:7px 0 0; padding-left:18px; }}
-  ol.fixlist li {{ font-size:10px; margin:3px 0; color:#7a4a00; }}
-  .signbox {{ margin-top:14px; border:1.5px solid #bbb; border-radius:8px; padding:11px 14px; }}
-  .sign .st {{ font-weight:700; color:{RED}; margin-bottom:7px; }}
-  .sign .opt {{ margin-bottom:5px; font-size:12px; }}
-  .sign .lines {{ margin:11px 0 9px; }}
+  ol.fixlist li {{ font-size:10px; margin:2px 0; color:#7a4a00; }}
+  .signbox {{ margin-top:9px; border:1.5px solid #bbb; border-radius:8px; padding:9px 13px; }}
+  .sign .st {{ font-weight:700; color:{RED}; margin-bottom:5px; }}
+  .sign .opt {{ margin-bottom:3px; font-size:12px; }}
+  .sign .lines {{ margin:7px 0 6px; }}
   .sign .chg {{ color:#555; }}
   .stamp {{ display:inline-block; border:3px solid #2E9E40; color:#2E9E40; font-weight:800; font-size:17px; padding:7px 16px; border-radius:8px; letter-spacing:.04em; }}
   .locknote {{ color:#7a0d12; font-size:11px; margin-top:8px; }}
-  footer {{ margin-top:14px; border-top:1px solid #ddd; padding-top:7px; }}
+  footer {{ margin-top:9px; border-top:1px solid #ddd; padding-top:5px; }}
   .ftgrid {{ display:flex; flex-wrap:wrap; gap:6px 18px; font-size:10px; }}
   .ftgrid div span {{ display:block; text-transform:uppercase; letter-spacing:.03em; color:#999; font-size:8.5px; font-weight:700; }}
   .ftgrid div b {{ font-size:11px; }}
@@ -424,12 +426,22 @@ HEAD = '<!doctype html><html><head><meta charset="utf-8"><style>' + CSS_PROOF + 
 FOOT = '</body></html>'
 
 
-def _item_footer(meta, today, job_no):
+def _item_footer(meta, today, job_no, full=True):
+    """Item-page footer. `full` renders the whole prepped/QC/job#/version/
+    fulfillment grid (the standalone single-item proof, where this is the ONE
+    place that section appears). In the whole-job document that section lives
+    once on the cover, so item pages pass full=False and carry only the page
+    number + contact line — no repeated metadata block on every page."""
+    page, pages = meta.get("page", 1), meta.get("pages", 1)
+    if not full:
+        return f"""<footer>
+        <div class="ftgrid"><div><span>Page</span><b>{page} of {pages}</b></div></div>
+        <div class="contact">{CONTACT}</div>
+      </footer>"""
     version = meta.get("version") or "—"
     prepped = meta.get("prepped_by") or "—"
     qc = meta.get("qc_by") or "—"
     fulfillment = (meta.get("fulfillment") or "").title() or "—"
-    page, pages = meta.get("page", 1), meta.get("pages", 1)
     return f"""<footer>
         <div class="ftgrid">
           <div><span>Prepped by</span><b>{html.escape(str(prepped))}</b></div>
@@ -444,12 +456,14 @@ def _item_footer(meta, today, job_no):
       </footer>"""
 
 
-def _item_body(job, res, spec, thumb_b64, approve, meta, logo="", today=None):
+def _item_body(job, res, spec, thumb_b64, approve, meta, logo="", today=None, full_footer=True):
     """One item's page (no <html>/<body> wrapper) - a <section class='page'>.
     `logo` (a data URI) shows a small mark in the header for a standalone proof;
     in the job document the cover carries the logo, so item pages pass ''.
     `today` (a preformatted display string, injectable for golden tests —
-    mirrors dashboard.py's injectable today) defaults to the real date."""
+    mirrors dashboard.py's injectable today) defaults to the real date.
+    `full_footer` False (whole-job document) prints just the page number in the
+    footer — the prepped/QC/job#/version/fulfillment section rides the cover once."""
     today = today or datetime.date.today().strftime("%B %d, %Y")
     verdict = res["verdict"]
     panel = res["panel"]
@@ -520,7 +534,7 @@ def _item_body(job, res, spec, thumb_b64, approve, meta, logo="", today=None):
         </div>
       </div>
       <div class="signbox">{signoff}</div>
-      {_item_footer(meta, today, job_no)}
+      {_item_footer(meta, today, job_no, full=full_footer)}
     </section>"""
 
 
@@ -548,7 +562,9 @@ def _cover_body(job, spec, items, meta, unmatched=None, today=None):
     n_graphics, n_pieces = job_totals(items)
 
     fields = [("Client", j.get("client")), ("Show", j.get("show")), ("Booth", j.get("booth_size")),
-              ("Job #", job_no), ("Proof version", version), ("Date issued", today)]
+              ("Job #", job_no), ("Proof version", version), ("Date issued", today),
+              ("Prepped by", meta.get("prepped_by")), ("QC'd by", meta.get("qc_by")),
+              ("Fulfillment", (meta.get("fulfillment") or "").title())]
     jobgrid = "".join(f'<div><span>{html.escape(l)}</span><b>{html.escape(str(v or "—"))}</b></div>'
                       for l, v in fields)
 
@@ -597,7 +613,8 @@ def build_job_html(job, spec, items, approve, base_meta, unmatched=None, today=N
     for idx, it in enumerate(items):
         meta = dict(base_meta, specs=it["specs"], placeholders=it["placeholders"],
                     missing=it["missing"], page=idx + 2, pages=pages)
-        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta, today=today)
+        out += _item_body(job, it["res"], spec, it["thumb_b64"], approve, meta,
+                          today=today, full_footer=False)
     return out + FOOT
 
 

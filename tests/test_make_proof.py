@@ -116,6 +116,37 @@ def test_build_job_html_no_block_when_nothing_skipped():
     assert "NOT INCLUDED" not in doc
 
 
+def test_job_doc_prepped_section_appears_once_on_cover():
+    """Marc's ask: the prepped/QC/fulfillment section shows ONE time, on the
+    cover — not repeated in a footer on every item page."""
+    base_meta = {"prepped_by": "A. Tech", "qc_by": "M. Palumbo",
+                 "version": "D", "fulfillment": "delivery"}
+    # two items so a repeated per-item footer would show the labels 2+ times
+    items = _job_items() + _job_items()
+    doc = mp.build_job_html("Booth Build", JOB_SPEC, items, None, base_meta)
+    # the prepped/QC/fulfillment values are present exactly once (on the cover)
+    assert doc.count("A. Tech") == 1
+    assert doc.count("M. Palumbo") == 1
+    assert doc.count(">Fulfillment<") == 1
+    # ...and the cover carries them (it's the first section of the document)
+    cover = doc.split('<section class="page"', 1)[0]
+    assert "A. Tech" in cover and "M. Palumbo" in cover and "Delivery" in cover
+    # every item page still gets its page-number footer
+    assert doc.count(">Page<") == len(items) + 1        # cover + one per item
+
+
+def test_single_item_proof_keeps_full_footer():
+    """The standalone single-item proof is the ONE place that section lives, so
+    it must still carry the full prepped/QC/fulfillment footer."""
+    res = _canned_job_res()
+    meta = {"specs": mp.panel_specs(JOB_PANEL, JOB_SPEC), "placeholders": [], "missing": [],
+            "prepped_by": "A. Tech", "qc_by": "M. Palumbo", "fulfillment": "pickup",
+            "version": "D", "page": 1, "pages": 1}
+    body = mp._item_body("Booth Build", res, JOB_SPEC, "", None, meta)
+    assert "A. Tech" in body and "M. Palumbo" in body and "Pickup" in body
+    assert ">Prepped by<" in body and ">Fulfillment<" in body
+
+
 def test_job_proof_with_unreadable_file_exits_nonzero(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 

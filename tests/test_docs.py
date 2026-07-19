@@ -16,8 +16,10 @@ DOCS = os.path.join(REPO, "docs")
 
 
 def test_corrupted_onboarding_pdfs_are_gone():
+    """Graphics_Design_AI_Brief.pdf was properly regenerated and reinstated
+    (2026-07-19), so it is no longer asserted gone; the content-based guard
+    test_no_chrome_error_page_pdfs_in_docs now covers it."""
     assert not os.path.exists(os.path.join(DOCS, "How_It_Works_Overview.pdf"))
-    assert not os.path.exists(os.path.join(DOCS, "Graphics_Design_AI_Brief.pdf"))
 
 
 def test_no_chrome_error_page_pdfs_in_docs():
@@ -29,10 +31,11 @@ def test_no_chrome_error_page_pdfs_in_docs():
 
 
 def test_readme_points_at_live_docs():
+    """The README may mention the regenerated Graphics_Design_AI_Brief.pdf
+    (reinstated 2026-07-19); only the still-dead overview PDF stays banned."""
     with open(os.path.join(REPO, "README.md"), encoding="utf-8") as f:
         readme = f.read()
     assert "How_It_Works_Overview.pdf" not in readme
-    assert "Graphics_Design_AI_Brief.pdf" not in readme
     assert "Workflow_Map" in readme
     assert "Instructions.md" in readme
 

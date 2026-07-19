@@ -18,6 +18,7 @@ see-graphics-toolkit/
 ## New here? Start with these (in `docs/`)
 1. **`Workflow_Map.png`** — the whole flow as one diagram, with the tool used at each step and where each `examples/` file fits.
 2. **`Instructions.md`** — plain-language, step-by-step (written assuming Claude is helping).
+3. **`Graphics_Design_AI_Brief.pdf`** — the one-page brief: each workflow issue, what the toolkit does about it, and what's live vs. still to come.
 
 ## The flow (and the tool for each step)
 | Step | Tool (`tools/`) | What it does |

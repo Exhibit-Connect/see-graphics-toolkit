@@ -429,11 +429,20 @@ def analyze_pdf(path):
     texts = []
     for pno, page in enumerate(r.pages, 1):
         mb = page.mediabox
-        media_in = (float(mb.width) / 72.0, float(mb.height) / 72.0)
+        # Honor /UserUnit: a page can scale the default 1/72" unit (required by
+        # the PDF spec for pages > 200", and used by design apps to encode a
+        # half-scale build). Ignoring it misreads a correctly-sized file - e.g.
+        # a half-scale wall delivered with UserUnit=10 would look ~1/10th size
+        # and wrongly FAIL. Every dimension below is in TRUE inches.
+        try:
+            uu = float(page.get("/UserUnit", 1) or 1)
+        except (TypeError, ValueError):
+            uu = 1.0
+        media_in = (float(mb.width) * uu / 72.0, float(mb.height) * uu / 72.0)
         trim_in = None
         if "/TrimBox" in page:
             tb = page.trimbox
-            trim_in = (float(tb.width) / 72.0, float(tb.height) / 72.0)
+            trim_in = (float(tb.width) * uu / 72.0, float(tb.height) * uu / 72.0)
         if pno == 1:
             info["media_in"], info["trim_in"] = media_in, trim_in
         info["page_sizes"].append({"page": pno, "media_in": media_in, "trim_in": trim_in})
@@ -446,11 +455,12 @@ def analyze_pdf(path):
             pw, ph = im["px"]
             placed = im["placed_pt"]
             if placed and placed[0] > 1 and placed[1] > 1:
-                # grade the WORST axis - vertical stretch degrades print too
-                ppi = min(pw / (placed[0] / 72.0), ph / (placed[1] / 72.0))
+                # grade the WORST axis - vertical stretch degrades print too.
+                # placed_pt is in user space; * uu / 72 gives TRUE placed inches.
+                ppi = min(pw / (placed[0] * uu / 72.0), ph / (placed[1] * uu / 72.0))
                 how = "placed"
             elif placed and placed[0] > 1:
-                ppi = pw / (placed[0] / 72.0)
+                ppi = pw / (placed[0] * uu / 72.0)
                 how = "placed"
             else:
                 ppi = pw / trim_w if trim_w else 0  # fallback: assume full-width placement

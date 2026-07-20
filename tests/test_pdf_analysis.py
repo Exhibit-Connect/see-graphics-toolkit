@@ -197,6 +197,23 @@ def test_clean_vector_pdf_still_passes(tmp_path):
     assert proofer.check_fonts(info)[0] == "PASS"
 
 
+def test_userunit_scales_page_to_true_size(tmp_path):
+    """A page can carry /UserUnit to encode its TRUE size (the PDF spec requires
+    it for pages > 200in; design apps also use it for a half-scale build).
+    analyze_pdf must read media_pt * UserUnit / 72 = true inches - otherwise a
+    correctly-sized file reads ~1/UserUnit of its size and wrongly FAILs size.
+    Regression for the real Uptool half-scale back-wall (UserUnit=10)."""
+    objs = catalog_and_pages() + [
+        # 734.4 x 1454.4 pt at /UserUnit 10 = 102 x 202 in (Wall A full + bleed)
+        page((102 * 72 / 10, 202 * 72 / 10), "<< >>", "4 0 R", extra="/UserUnit 10 "),
+        stream("", "1 0 0 0 k 0 0 734 1454 re f"),
+    ]
+    info = proofer.analyze_pdf(build_pdf(tmp_path / "userunit.pdf", objs))
+    assert abs(info["media_in"][0] - 102) < 0.05    # true inches, not 10.2
+    assert abs(info["media_in"][1] - 202) < 0.05
+    assert proofer.check_size(info, SPEC, PANEL)[0] == "PASS"
+
+
 def clean_cmyk_pdf(tmp_path):
     """Full + bleed size, CMYK image at 144 ppi, no fonts, no gaps."""
     objs = catalog_and_pages() + [
